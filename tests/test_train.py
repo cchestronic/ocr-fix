@@ -12,7 +12,7 @@ import pytest
 
 from ocrfix.config import load_config
 from ocrfix.data.common import EMPTY_THINK
-from ocrfix.llm.prompt import SYSTEM
+from ocrfix.stages.prompt import SYSTEM
 
 pytest.importorskip("trl")
 pytest.importorskip("peft")
@@ -43,7 +43,7 @@ def cfg_for(model_dir, *extra):
     return load_config(
         "rtx5090",
         [
-            f"paths.base_model={model_dir}",
+            f"model={model_dir}",
             "hw.train.mode=lora",
             "hw.dtype=float32",
             "hw.train.optim=adamw_torch",
@@ -57,7 +57,7 @@ def cfg_for(model_dir, *extra):
             "train.logging_steps=1",
             "train.eval_steps=1",
             "train.save_steps=1000",
-            "scorer.calibration=null",
+            "score.calibration=null",
             *extra,
         ],
     )
@@ -367,7 +367,7 @@ def test_lora_dpo_on_full_sft_then_merge(chat_model_dir, dpo_file, full_sft, tmp
     assert (out / "adapter_config.json").is_file()
     r = CliRunner().invoke(app, [
         "train", "merge", str(out), str(tmp_path / "merged"), "--profile", "rtx5090",
-        "--set", f"paths.base_model={chat_model_dir}", "--set", "hw.train.mode=lora",
+        "--set", f"model={chat_model_dir}", "--set", "hw.train.mode=lora",
     ])  # fmt: skip
     assert r.exit_code == 0, r.output
     assert f"base: {full_sft}" in r.output

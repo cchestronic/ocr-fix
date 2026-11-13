@@ -1,10 +1,7 @@
-"""The one masking rule, used by every stage that reads text through a model (score,
-correct, verify, and the training data): every math span (inline and display) -> ⟨M#⟩,
-every table -> ⟨T#⟩, and ⟨P#⟩ for the ``llm.protect`` kinds in prose (URLs, inline code,
-image links, emails, DOIs, citation brackets).
-
-``mask`` numbers placeholders 1-based per kind in order of appearance; ``mapping`` is in
-position order, so ``placeholders.restore`` checks that each comes back once, in order.
+"""What gets masked: every math span (inline and display) -> ⟨M#⟩, every table -> ⟨T#⟩, and
+⟨P#⟩ for the ``chunk.protect`` kinds in prose (URLs, inline code, image links, emails, DOIs,
+citation brackets). The chunker masks with it once (chunks/split.py); every later stage reads
+that masked text.
 """
 
 from __future__ import annotations
@@ -12,7 +9,6 @@ from __future__ import annotations
 import bisect
 import re
 
-from ocrfix.corpus.placeholders import PLACEHOLDER, PlaceholderError
 from ocrfix.schema import MATH_PH, PROTECTED_PH, TABLE_PH, Span
 
 # Order matters: earlier patterns win where they overlap.
@@ -43,17 +39,3 @@ def protected_spans(text: str, spans: list[Span], kinds: list[str]) -> list[tupl
                     out.append((a, b, "protected"))
                     taken.insert(i, (a, b))
     return sorted(out)
-
-
-def mask(text: str, spans: list[Span], kinds: list[str]) -> tuple[str, dict[str, str]]:
-    if m := PLACEHOLDER.search(text):
-        raise PlaceholderError(f"text already contains placeholder {m.group()!r}")
-    parts, mapping, counts, pos = [], {}, {"math": 0, "table": 0, "protected": 0}, 0
-    for a, b, kind in protected_spans(text, spans, kinds):
-        counts[kind] += 1
-        ph = _FORMAT[kind].format(counts[kind])
-        parts += [text[pos:a], ph]
-        mapping[ph] = text[a:b]
-        pos = b
-    parts.append(text[pos:])
-    return "".join(parts), mapping

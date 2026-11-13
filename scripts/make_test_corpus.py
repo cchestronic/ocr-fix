@@ -12,7 +12,7 @@ Writes, deterministically for a seed:
                            with --lost-words the lost words ({start, end, word, garbage},
                            offsets into the document before 〈?〉 replaced them): words OCR
                            destroyed beyond recovery; truth/ has 〈?〉 there, the answer a
-                           hand-corrected truth file gives (score with `ocrfix refine eval`)
+                           hand-corrected truth file gives (score with `ocrfix eval`)
 
 The text is assembled from sentence templates and a vocabulary, so it is fluent enough for a
 language model to score but repetitive compared with real papers. Use it to test plumbing and
@@ -388,7 +388,7 @@ def add_noise(text: str, r: random.Random) -> tuple[str, list[str]]:
 
 # --- lost words (destroyed beyond recovery: the right answer is 〈?〉) -------------------------
 
-# not the alphabets of refine.data's garble(), so a model trained on that is tested on new garbage
+# not the alphabets of stages/data.py's garble(): a model trained on those meets new garbage
 LOST_WORD = re.compile(r"(?<![\w-])(?:[가-힣]{2,8}|[A-Za-z]{4,})(?![\w-])")
 JAMO = "ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎㅏㅑㅓㅕㅗㅛㅜㅠㅡㅣ"
 LATIN_GARBLE = "ABCDEFGHJKMNPQRSTUVWXYZbdfghjkpqtxyz024689"

@@ -6,6 +6,10 @@ A paragraph (or chunk) is flagged (likely has OCR damage) when any set part hold
 
 A part that is null is off (files without ``bpc`` are the older spike_frac / p90 rules).
 
+``noise_chunk`` (per language, ``"*"`` for the rest): a chunk whose bpc is above it is noise as a
+whole (``is_noise_chunk``; `score` drops its prose). Set by `calibrate` above the highest bpc of
+any real text in its data (clean and damaged); files without it never drop a chunk.
+
 Languages without their own rule use ``"*"``. A null feature never flags, and neither does a
 ``low_confidence`` row (too few scored tokens). ``variant`` is always ``raw`` now (the
 newline-collapsed ``flat`` scoring pass was removed); files with ``flat`` still load.
@@ -43,6 +47,7 @@ class Calibration:
     rules: dict[str, Rule] = field(default_factory=dict)
     target_recall: float | None = None
     max_false_flag: float | None = None
+    noise_chunk: dict[str, float] = field(default_factory=dict)
 
     @property
     def prefix(self) -> str:
@@ -70,6 +75,16 @@ class Calibration:
                 return True
         return False
 
+    def noise_chunk_threshold(self, lang: str | None) -> float | None:
+        t = self.noise_chunk.get(lang or "*")
+        return self.noise_chunk.get("*") if t is None else t
+
+    def is_noise_chunk(self, feats: dict[str, Any], lang: str | None) -> bool:
+        """bpc above the language's noise-chunk threshold (never for low_confidence)."""
+        t = self.noise_chunk_threshold(lang)
+        v = feats.get("bpc")
+        return bool(t is not None and v is not None and not feats.get("low_confidence") and v > t)
+
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["version"] = VERSION
@@ -90,6 +105,7 @@ def load_calibration(path: str | Path) -> Calibration:
         rules=rules,
         target_recall=d.get("target_recall"),
         max_false_flag=d.get("max_false_flag"),
+        noise_chunk={str(k): float(v) for k, v in (d.get("noise_chunk") or {}).items()},
     )
 
 

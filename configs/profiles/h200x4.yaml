@@ -1,6 +1,5 @@
 # 4x H200 (141 GB each, Hopper sm_90).
-paths:
-  base_model: /models/Qwen3.5-9B   # change here when the 9B is in place
+model: /models/Qwen3.5-9B   # change here when the 9B is in place
 
 hw:
   name: h200x4
@@ -21,19 +20,21 @@ hw:
       sharding: full_shard auto_wrap
       layer_cls: Qwen3_5DecoderLayer
 
-  infer:
-    # 9B fits on one H200: replicate (4 engines, one per GPU) rather than shard.
+  infer:                              # vLLM: `ocrfix serve` starts the engines, score/correct use them
+    engines: 4                        # one per GPU (GPU i -> port base_port + i)
     tensor_parallel_size: 1
-    data_parallel_size: 4             # engines, one per GPU, on base_port + i
     gpu_memory_utilization: 0.92
     max_model_len: 8192
     max_num_seqs: 256
-    base_port: 8000
-    urls: ["http://127.0.0.1:8000", "http://127.0.0.1:8001", "http://127.0.0.1:8002", "http://127.0.0.1:8003"]
-    client_concurrency: 512           # requests in flight (all engines together)
+    host: 127.0.0.1                   # the engines listen here: 127.0.0.1 = this machine only;
+                                      # the LAN address to serve other machines
+    base_port: 8000                   # engine i listens on base_port + i
+    correct_port: 8100                # the tuned engines (`serve --correct`), GPU i -> correct_port + i
+    concurrency: 512                  # requests in flight per kind (scoring, correction)
+    score_urls: null                  # servers for scoring; null = this machine's engines
+    correct_urls: null                # servers for correction; null = the base engines, or the
+                                      # tuned ones (correct_port) when correct.model is set
 
   scorer:
-    max_seq_len: 8192
     max_batch_tokens: 32768
     logits_chunk: 4096
-    tokenize_workers: 6               # per rank (4 ranks)

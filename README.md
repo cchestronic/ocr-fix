@@ -1,330 +1,267 @@
 # ocrfix
 
-Finds and fixes OCR errors in Markdown documents (MinerU output, Korean and English, with
-LaTeX math and tables) using a locally hosted Qwen3.5 model. Runs fully **offline**.
+Finds and fixes OCR errors in Markdown documents (MinerU output, Korean and English, with LaTeX
+math and tables) using a locally hosted Qwen3.5 model. Runs fully **offline**.
 
-- **What it fixes:** character confusions (`Tab1e` → `Table`), wrong spacing, broken words and
-  lines, stray page numbers.
+- **What it fixes:** character confusions (`Tab1e` → `Table`, `방볍` → `방법`), wrong spacing,
+  broken lines and hyphenation, stray page numbers, and garbage text.
 - **What it never touches:** math, tables, links, code and citations. They are replaced by
-  placeholders (`⟨M1⟩`, `⟨T1⟩`, `⟨P1⟩`) before any model sees the text, and restored afterwards.
-- **Machines:** today one RTX 5090 with **Qwen3.5-4B**; later 4× H200 with **Qwen3.5-9B**.
+  placeholders (`⟨M1⟩`, `⟨T1⟩`, `⟨P1⟩`) before any model sees the text, and put back afterwards.
+- **Other languages:** chunks mostly in Chinese or Japanese (Han, kana) are tagged `cjk` and
+  passed through unchanged (`correct.langs: [ko, en, mixed]`), and noise removal never deletes
+  Chinese or Japanese text: measured on real Chinese text, it would otherwise remove about 17%
+  of it (Chinese has no spaces, so a whole sentence is judged as one word, and one in six such
+  words scores above the threshold). Hanja inside Korean text keeps the chunk `ko`.
+- **Machines:** an RTX 5090 with **Qwen3.5-4B**, or H200s with **Qwen3.5-9B**.
 
-The detailed reference for every command and setting is [CLAUDE.md](CLAUDE.md); the operator
-guide is [docs/runbook.md](docs/runbook.md). **Running on real data, step by step** (gold `.md`
-pairs → calibration → SFT/DPO → eval → the corpus): [docs/real_data.md](docs/real_data.md);
-how to correct gold files: [docs/annotation_guideline.md](docs/annotation_guideline.md).
+Guides: [docs/real_data.md](docs/real_data.md) (every command on real data, in order),
+[docs/annotation_guideline.md](docs/annotation_guideline.md) (how to write gold truth files),
+[docs/runbook.md](docs/runbook.md) (install details, the H200s, adding a machine), and
+[CLAUDE.md](CLAUDE.md) (the full reference for every command and setting).
 
 ## How it works
 
-Two parts in one repository:
-
-**1. Refinement** (vLLM)
 ```
-.md files ─► chunk ─► score ─► correct (flagged chunks) ─► re-score ─► verify ─► reconstruct ─► .md files
+gold .md pairs ─► gold chunks ─► errors table ─► corrupt ─┬─► score ─► calibrate            (when is a chunk damaged)
+                      │                                    └─► data sft ─► train sft ─► data dpo ─► train dpo
+                      └─► calibrate-noise                                         (what is noise)
+
+corpus .md ─► chunk ─► score (+ noise removal, flags) ─► correct (+ checks, re-score) ─► reconstruct ─► corrected .md
 ```
-- **chunk:** every `.md` file → pieces of 512–768 tokens, masked, one JSONL row each.
-- **score:** the language model (through vLLM) measures how surprising each token is; very surprising text is
-  likely OCR damage. Placeholders and the 2 tokens after each are not scored.
-- **correct:** the fine-tuned model rewrites flagged chunks; every placeholder must come back.
-- **re-score + verify:** right after a correction, score it again and run safety checks (math
-  unchanged, not rewritten too much, same language, score improved). A failed correction is
-  rejected and the original text is kept.
-- **reconstruct:** chunks → `.md` files: the original (byte-exact) or the corrected version.
 
-**2. Training** the correction model: a human gold set gives the real error rates; clean `.md`
-files are damaged on purpose at those rates to make SFT pairs; DPO pairs come from the SFT
-model's own answers, judged by vLLM scores and the verify checks; then SFT → DPO → merge.
-
-## Status
-
-| stage | works on | status |
-|---|---|---|
-| `chunk`, `reconstruct` | 512–768-token chunks | **done**, tested byte-exact on 50 MB |
-| `refine score`, `refine correct` (correct → re-score → verify per chunk) | chunks | **done**, tested against a fake vLLM and the transformers backend, and run on vLLM with the 4B on the 5090 |
-| `refine corrupt`, `calibrate` | chunks (and paragraphs) | **done** on chunks, tested with the fake vLLM; real thresholds need the GPU |
-| `refine data` (chunk SFT examples: damaged → clean, clean → unchanged, short junk) | chunks | **done**; 3,998 examples from the test data, all ≤ 2,048 tokens. QLoRA SFT on the 4B (1 epoch, 64 min): test doc CER 0.58% → 0.13% (flagged chunks) / 0.01% (`--all`), vs 0.23% for the base model |
-| `refine dpo` (chosen = clean chunk, rejected = the model's own mistakes) | chunks | **done**; `train dpo` runs on its pairs. On the test data the SFT model is right on 1,299/1,300 new prompts, so DPO there has nothing to learn |
-| `gold`, `errors table`, `corrupt`, `data sft/dpo` | paragraphs | working; gold and DPO moving to chunks |
-| `train sft/dpo/merge` (QLoRA, LoRA or full) | — | **done** |
-| `ingest`, `score`, `correct`, `verify`, `eval`, `pipeline` | paragraphs | the older paragraph pipeline; still used for calibration and training data until those move to chunks |
+| command | what it does |
+|---|---|
+| `chunk` | cuts every `.md` file into 512–768-token chunks and masks math, tables and links |
+| `score` | the base model measures how surprising each token is; deletes long runs of garbage (**noise removal**) and whole chunks that are garbage (bpc above the calibration's `noise_chunk` limit); flags damaged chunks (with the calibration) |
+| `correct` | the trained model rewrites each flagged chunk (or all with `--all`); the result must pass checks and score better than before, else the original is kept |
+| `reconstruct` | chunks back to `.md` files, the original (byte-exact) or the corrected text; a document noise removal left nearly empty is not written (listed in `dropped_docs.jsonl`); documents with tables are always kept |
+| `gold chunks` | your hand-corrected `.md` pairs → chunk pairs, split by document into sft / dpo / eval |
+| `errors table` | the real error types and rates in your gold |
+| `corrupt` | adds fake OCR errors to clean text at those rates (for calibration and training data) |
+| `calibrate` | decides which scores mean "damaged", and above which bpc a whole chunk is garbage (`data/calibration/calibration.yaml`) |
+| `calibrate-noise` | decides which text is noise to delete (writes `configs/stages/score.yaml`) |
+| `bpc-hist` | histogram of chunk bpc per language from any `score` output, with the noise-chunk limit (a PNG and a text table; no model needed) |
+| `calibrate-noise-chunk` | decides above which bpc a whole chunk is garbage, from the gold, and shows what that drops in the corpus (writes `noise_chunk` in `calibration.yaml`) |
+| `data sft` / `data dpo` | the training files: damaged → correct examples; the model's own mistakes as DPO pairs |
+| `train sft` / `dpo` / `merge` | QLoRA, LoRA or full fine-tuning; merge an adapter into a model |
+| `eval` | corrected documents vs your truth files: CER, false fixes, recall per error type |
+| `serve` | starts the vLLM engines the other commands send requests to |
+| `summary`, `report`, `compare`, `config` | run statistics, corpus quality before/after, vLLM vs transformers, the settings in effect |
 
 ## Install
 
-On an online machine (same Python 3.12, x86_64), or directly if this machine is online:
+On an online machine with the same Python (3.12, x86_64):
 
 ```bash
-scripts/make_wheelhouse.sh wheelhouse          # online: download all pinned packages
-scripts/install_offline.sh wheelhouse .venv    # offline: install from the wheelhouse
-source .venv/bin/activate && source scripts/env.sh
+python3 scripts/make_wheelhouse.py wheelhouse          # downloads every pinned package
 ```
 
-Copy the model folder by hand. Its path is set **per machine** in the profile, so switching
-4B ↔ 9B is one line:
-
-| profile | file | `paths.base_model` |
-|---|---|---|
-| `rtx5090` (default) | `configs/profiles/rtx5090.yaml` | `Qwen3.5-4B` (in the project folder) |
-| `h200x4` | `configs/profiles/h200x4.yaml` | `/models/Qwen3.5-9B` |
-
-Check: `ocrfix config --profile rtx5090 --key paths.base_model`.
-
-Every command takes `--profile NAME` (default `rtx5090`, or `$OCRFIX_PROFILE`),
-`--set key=value` to override any setting, and `--limit N` for a quick test on a few items.
-
-## Commands
-
-### Chunk
-```bash
-ocrfix chunk /data/mineru data/chunks                    # every **/*.md under the folder
-ocrfix chunk /data/mineru data/chunks --limit 100        # first 100 documents only
-ocrfix chunk /data/mineru data/chunks --sample-frac 0.003   # 0.3% of documents, by path hash
-ocrfix chunk /data/mineru data/chunks --workers 12 --set io.gzip=true   # 12 processes, gzipped
-```
-- Output: `data/chunks/part-NNNNN.jsonl`, plus `manifest.json` and `stats.json` (counts, token
-  histogram, files that could not be read).
-- Chunk size: `chunk.min_tokens` / `chunk.max_tokens` (512 / 768) in `configs/default.yaml`.
-- Interrupted? Run the same command again: finished shards are skipped. A different input or
-  setting into the same folder is refused; use a new folder.
-- One row per chunk; the main fields:
-
-  | field | meaning |
-  |---|---|
-  | `chunk_id`, `doc_id`, `source_path`, `chunk_index`, `n_chunks` | where it comes from |
-  | `source_text` | the masked original text |
-  | `text` | the masked corrected text; `null` = unchanged |
-  | `placeholders` | `{"⟨M1⟩": "$x^2$", "⟨T1⟩": "<table>…"}` |
-  | `prefix`, `suffix`, `raw` | whitespace and original bytes, for exact reconstruction |
-  | `n_tokens`, `short`, `lang` | size (`short` = under 512, only at a document's end), language |
-  | `status`, `score`, `history` | filled by later stages |
-
-### Reconstruct
-```bash
-ocrfix reconstruct data/chunks                              # check only: rebuild in memory, compare
-ocrfix reconstruct data/chunks out/original                 # write the original files (byte-exact)
-ocrfix reconstruct data/chunks out/fixed --source current   # write the corrected files
-```
-The check compares every rebuilt file with the sha256 of the source file and exits with code 1
-if any differs.
-
-### Score, correct, verify (chunks)
+Copy `wheelhouse/` and the model folder to each offline machine, then:
 
 ```bash
-# 1. start vLLM (one engine per GPU, settings from the profile); wait for "ready"
-scripts/serve_vllm.sh --profile rtx5090 --set llm.adapter=runs/sft   # base model + correction adapter
-
-# 2. score every chunk; the scores are written into each chunk row
-ocrfix refine score data/chunks data/scored
-
-# 3. correct flagged chunks; each correction is re-scored and verified at once
-ocrfix refine correct data/scored data/refined
-ocrfix refine correct data/scored data/refined --all     # every chunk, without a calibration
-
-# 4. status counts, accept rate, failed checks
-ocrfix refine summary data/refined
-
-# 5. corpus quality per language: before noise removal, before and after correction
-ocrfix refine report data/refined --clean data/clean_scored --json data/refined/report.json
-
-# 6. the corrected markdown files
-ocrfix reconstruct data/refined out/fixed --source current
-```
-- **`refine report`** shows, per language, bpc (all bits / all characters, so long chunks weigh
-  more) and the share of chunks the calibration flags, at three stages: before noise removal,
-  before correction, after. `--clean` adds clean text in the same language as a baseline
-  (score it with `--set refine.noise.remove=false`) and how much of the gap to it noise
-  removal and correction each closed. Compare languages only with their own clean baseline:
-  clean Korean scores about 1.13 bpc, clean English about 0.46. These are the model's view;
-  check the real error rate on gold chunks.
-- **Flagging** uses the calibration (`scorer.calibration`, default
-  `data/calibration/calibration.yaml`); without one, `correct` stops and asks for `--all`.
-- **What `correct` does per chunk:** send the whole masked chunk to the correction model → check
-  placeholders, new math/tables, length, edit size, language, `〈?〉` → re-score the corrected
-  text → accept only if the score improved. Accepted: `text` is replaced and `status` is
-  `accepted`. Otherwise the text stays (`rejected`, `unchanged` or `error`). Every attempt is
-  kept in `history`, including the model's answer and the checks.
-- **Scoring** uses the base model, never the adapter (`refine.score_model`), so scores before
-  and after correction are comparable.
-- **Separate servers:** `--set 'refine.score_urls=[http://127.0.0.1:8000]' --set
-  'refine.correct_urls=[http://127.0.0.1:8001,http://127.0.0.1:8002]'`. Both default to
-  `hw.infer.urls`, the engines `serve_vllm.sh` starts.
-- **Without vLLM:** `--set refine.scorer=transformers` scores with the local model on this
-  process's GPU (slower; correction still needs vLLM).
-- **Port 8000 in use?** Add `--set hw.infer.base_port=8100 --set
-  'hw.infer.urls=[http://127.0.0.1:8100]'` to both `serve_vllm.sh` and `refine`.
-- **Interrupted?** Run the same command again: finished shards are skipped. `--limit N`
-  processes only the first N shards.
-
-The older paragraph commands (`ingest` → `fix` → `score` → `correct` → `verify`, or
-`ocrfix pipeline`) still work; see [docs/runbook.md](docs/runbook.md).
-
-### Random noise removal
-
-`refine score` also finds random noise (`ⅡⅢ▯ ¤ʘ…`, `lIl1 :;. rnvv`, garbled Hangul) and
-**cuts it out automatically**, then scores the cleaned chunk again.
-- **How:** from the scores, as **bits per character** of each word. Noise packs many
-  surprising tokens into few characters; real text, even with OCR errors, doesn't. A word
-  above the `core` threshold starts a noise run; neighbouring words above `extend` join it.
-- **Thresholds** by the word's script, not the chunk's language (a Hangul syllable carries
-  more bits than a Latin letter): `refine.noise.core` (Hangul 8.0, other 5.0) and
-  `refine.noise.extend` (6.0 / 3.5). Set on the 4B with the test data (removed text that is
-  noise: 97%, noise found: 58% at 20 characters). Check them on real chunks, and again for
-  the 9B.
-- **Only long stretches** (`refine.noise.min_chars`, 20 non-space characters) are removed;
-  shorter ones are left for the corrector. Placeholders are never removed.
-- **Reversible:** each removal is recorded in `history` (`stage: denoise`, position and removed
-  text); `source_text` keeps the original. A chunk with no text left gets `status: noise` and
-  is never sent to the corrector.
-- **Off:** `--set refine.noise.remove=false` (always off when scoring calibration inputs).
-- **Not caught:** repeated junk such as `. . . .`, `1 1 1 1`, or the same junk string again
-  (the model predicts repetition), and noise runs under 20 characters.
-
-### Calibration (chunks)
-
-Decides which scores count as "damaged". Inputs: error rates from the gold set, and clean
-chunks (from your clean `.md` files).
-
-```bash
-ocrfix errors table data/gold/gold_train.jsonl data/errors          # error rates from gold
-ocrfix chunk /data/clean_md data/clean_chunks                       # clean chunks
-E="data/errors/error_table.json data/errors/confusion_map.json"
-ocrfix refine corrupt data/clean_chunks $E data/calib/corrupt/table.jsonl          # gold rates
-ocrfix refine corrupt data/clean_chunks $E data/calib/corrupt/r0.01.jsonl --rate 0.01
-ocrfix refine corrupt data/clean_chunks $E data/calib/corrupt/r0.03.jsonl --rate 0.03
-ocrfix refine corrupt data/clean_chunks $E data/calib/corrupt/r0.1.jsonl  --rate 0.1
-S="--set scorer.calibration=null --set refine.noise.remove=false"
-ocrfix refine score data/clean_chunks data/calib/clean_scored $S
-ocrfix refine score data/calib/corrupt data/calib/corrupt_scored $S
-ocrfix calibrate data/calib/clean_scored data/calib/corrupt_scored data/calibration
-```
-- `--rate R` = R errors per prose character (0.01 = 1 in 100 characters, 0.1 = 1 in 10, very
-  heavy). Without `--rate`, each chunk gets a rate drawn from the gold set's measurements.
-- `refine corrupt` damages prose only: math, tables, links, citations and the spaces next to
-  them are never touched, so the placeholders stay the same.
-- `calibrate` writes `data/calibration/calibration.yaml` (the default `scorer.calibration`).
-  From then on `refine score` writes `flag` into each chunk, and `refine correct` sends only
-  flagged chunks. A chunk is flagged when `spike_frac > A or p90 > B or bpc > C` (per
-  language; `calibrate` picks the parts and thresholds with the best recall at <= 5% of clean
-  chunks flagged). Use a few thousand clean chunks (`--limit` on `refine corrupt`).
-- Scores and calibration belong to one model: after switching 4B → 9B, score and calibrate
-  again.
-
-### Training data (chunks)
-
-`refine correct` sends one whole chunk with its own prompt, so the model is trained on exactly
-that form: `refine data` builds the examples, `train sft` trains on them.
-```bash
-# damaged copies of clean chunks, at the gold set's error rates (and a fixed rate for variety)
-ocrfix refine corrupt data/chunks_clean data/errors/error_table.json data/errors/confusion_map.json data/train/corrupt_table.jsonl
-ocrfix refine corrupt data/chunks_clean data/errors/error_table.json data/errors/confusion_map.json data/train/corrupt_r0.03.jsonl --rate 0.03
-
-ocrfix refine data data/sft_chunks \
-  --synthetic data/train/corrupt_table.jsonl --synthetic data/train/corrupt_r0.03.jsonl \
-  --identity data/chunks_clean
-scripts/train.sh sft data/sft_chunks/train.jsonl runs/sft --eval data/sft_chunks/val.jsonl --profile rtx5090
-```
-- **synthetic:** damaged chunk → clean chunk. 30% of them also get 1–3 short junk runs
-  (symbols, `lI1`-like strings, random Hangul; 3–30 characters, after a sentence or as their
-  own paragraph) that the answer leaves out: the junk `refine score` doesn't remove.
-- **identity:** clean chunks with themselves as the answer (25% of the mix), so the model
-  learns to leave correct text alone.
-- Settings in `refine.data` (mix, `lang_balance`, `total`, `junk`); the split is by document
-  (`data.val_frac`), and documents in the gold eval split are never used.
-- `stats.json`: chunks per source and language, what was taken, what was dropped and why.
-- **lost words:** 10% of synthetic chunks get 1–2 words replaced by garbage that holds nothing
-  of them (random syllables or letters, boxes, symbols), answered with `〈?〉`, so the model
-  learns to mark what it can't recover instead of inventing a word.
-- **gold:** `--gold data/real/gold_chunks/sft` (`ocrfix gold chunks` output from hand-corrected
-  `.md` pairs), each chunk twice; see [docs/real_data.md](docs/real_data.md).
-
-**DPO pairs** come from the SFT model's own mistakes on prompts it hasn't seen (chosen is
-always the known clean chunk):
-```bash
-scripts/serve_vllm.sh --profile rtx5090 --set llm.adapter=runs/sft     # base + SFT adapter
-ocrfix refine corrupt data/chunks_clean data/errors/error_table.json data/errors/confusion_map.json data/train/corrupt_dpo.jsonl --set seed=7
-ocrfix refine dpo data/dpo_chunks.jsonl --synthetic data/train/corrupt_dpo.jsonl \
-  --identity data/chunks_clean --exclude data/sft_chunks/train.jsonl --set llm.adapter=runs/sft
-scripts/train.sh dpo data/dpo_chunks.jsonl runs/sft runs/dpo --profile rtx5090
-```
-- Each prompt is answered once greedily (as `refine correct` does) and 4 times sampled.
-  Every answer that isn't exactly the clean chunk is a rejected answer: the greedy one first,
-  then the sampled ones closest to the right answer, at most 2 per prompt. Each pair is typed:
-  `missed` (damage left), `false_fix` (correct text changed), `wrong_fix`, `mixed`,
-  `placeholders`, `truncated`, `guessed` (a word where `〈?〉` belongs), `overcautious` (`〈?〉`
-  where a fix was possible).
-- Prompts the model already gets right every time get no pair, except a quarter of them that
-  get one constructed wrong answer (the damaged input as is, half the fixes undone, or a
-  placeholder dropped), so DPO doesn't drift on what already works.
-- `--exclude`: prompts already in the SFT data are skipped; the SFT model learned their answers.
-- **Serving a LoRA adapter crashed vLLM 0.33** (illegal memory access in its LoRA code when
-  base-model scoring and adapter requests share a batch). Merge instead and run two engines:
-  ```bash
-  scripts/train.sh merge runs/sft runs/sft_merged --profile rtx5090
-  scripts/serve_vllm.sh --profile rtx5090 --set hw.infer.gpu_memory_utilization=0.44 --set paths.work_dir=runs/vllm_base
-  scripts/serve_vllm.sh --profile rtx5090 --set hw.infer.gpu_memory_utilization=0.44 --set paths.work_dir=runs/vllm_sft \
-    --set hw.infer.base_port=8001 --set 'hw.infer.urls=[http://127.0.0.1:8001]' \
-    --set llm.model=runs/sft_merged --set llm.served_model_name=ocrfix-sft
-  ocrfix refine correct data/scored data/refined --set 'refine.score_urls=[http://127.0.0.1:8000]' \
-    --set 'refine.correct_urls=[http://127.0.0.1:8001]' --set llm.served_model_name=ocrfix-sft --set refine.score_model=qwen3.5
-  ```
-
-**transformers instead of vLLM for small jobs** (DPO sampling, eval): `--set
-refine.generator=transformers` answers the same requests in-process (`llm.model`, or
-`llm.adapter` without merging). Check first that both backends agree: `ocrfix refine compare`
-(scores, flags, noise spans, greedy answers); see [docs/real_data.md](docs/real_data.md).
-
-### Training (summary, paragraph format)
-```bash
-ocrfix errors table data/gold/gold_train.jsonl data/errors     # error rates from the gold set
-ocrfix corrupt clean.jsonl data/errors/error_table.json data/errors/confusion_map.json data/train/synthetic.jsonl
-ocrfix data sft data/sft --synthetic data/train/synthetic.jsonl --gold data/gold/gold_train.jsonl
-scripts/train.sh sft data/sft/train.jsonl runs/sft --profile rtx5090
-ocrfix data dpo data/dpo.jsonl --gold data/gold/gold_train.jsonl --model ocrfix-lora --set llm.adapter=runs/sft
-scripts/train.sh dpo data/dpo.jsonl runs/sft runs/dpo --profile rtx5090
-scripts/train.sh merge runs/dpo runs/merged --profile rtx5090
-```
-Mode: `--set hw.train.mode=qlora|lora|full` (5090: `qlora`; H200: `lora` or `full`). The full
-sequence with gold and calibration is in [docs/runbook.md](docs/runbook.md).
-
-## Test data
-
-Generate a synthetic test corpus (no download, no model, ~2 s):
-```bash
-python scripts/make_test_corpus.py data/test --ocr-mb 50 --clean-mb 20
-```
-- `data/test/ocr/`: documents with injected OCR errors (to refine)
-- `data/test/truth/`: the same documents without errors (answer key, for testing only)
-- `data/test/clean/`: other error-free documents (for SFT data)
-- `data/test/ocr_errors.jsonl`: what was injected per document (for testing only; on real data
-  the error rates come from the gold set)
-
-A fake gold set of chunk pairs from the test data (test only; real gold comes from annotators):
-```bash
-python scripts/make_test_gold.py data/test/chunks/truth data/test/gold --n 5000
-ocrfix errors table data/test/gold/gold_train.jsonl data/test/errors
+python3 scripts/install_offline.py wheelhouse .venv    # never touches the network
+source .venv/bin/activate
 ```
 
-The sentences come from templates: fine for testing the pipeline and speed, not for judging
-model quality.
+## What you prepare
 
-## Tests
+```
+data/real/
+  corpus/        the MinerU .md tree to correct (e.g. 50 GB), as it is
+  gold/ocr/      MinerU .md files picked for gold, copied unchanged
+  gold/truth/    the same files, hand-corrected, same relative paths
+  clean/         born-digital markdown in the same style (no OCR errors)
+```
+
+How to correct the truth files: [docs/annotation_guideline.md](docs/annotation_guideline.md).
+
+## How to run
+
+### A. One machine with a GPU (the RTX 5090)
+
+The default profile is `rtx5090`: the 4B in the project folder, vLLM on ports 8100 (base
+model) and 8101 (trained model; 8000 is taken on this machine).
 
 ```bash
-pytest                                  # ~3 min, tiny random model, never uses the network
+E="data/real/errors/error_table.json data/real/errors/confusion_map.json"
+
+# 1. gold, error rates, clean chunks (CPU)
+ocrfix gold chunks data/real/gold data/real/gold_chunks
+ocrfix errors table data/real/gold_chunks/sft data/real/errors
+ocrfix chunk data/real/clean data/real/chunks_clean
+
+# 2. noise and damage thresholds (base model)
+ocrfix serve &                                         # wait for "ready"
+ocrfix calibrate-noise data/real/gold_chunks           # -> configs/stages/score.yaml
+ocrfix corrupt data/real/chunks_clean $E data/real/calib/corrupt/table.jsonl
+ocrfix corrupt data/real/chunks_clean $E data/real/calib/corrupt/r0.03.jsonl --rate 0.03
+S=(--set score.calibration=null --set score.noise.remove=false)
+ocrfix score data/real/chunks_clean data/real/calib/clean_scored "${S[@]}"
+ocrfix score data/real/calib/corrupt data/real/calib/corrupt_scored "${S[@]}"
+ocrfix calibrate data/real/calib/clean_scored data/real/calib/corrupt_scored data/calibration
+
+# 3. SFT (stop the engine first: Ctrl-C, or pkill -f "[o]crfix serve")
+ocrfix corrupt data/real/chunks_clean $E data/real/train/corrupt_table.jsonl
+ocrfix data sft data/real/sft --synthetic data/real/train/corrupt_table.jsonl \
+  --gold data/real/gold_chunks/sft --identity data/real/chunks_clean
+ocrfix train sft data/real/sft/train.jsonl runs/sft --eval data/real/sft/val.jsonl
+ocrfix train merge runs/sft runs/sft_merged
+
+# 4. DPO (optional; base + SFT model, each with ~half the GPU)
+T=(--set correct.model=runs/sft_merged)
+ocrfix serve --memory 0.44 &
+ocrfix serve --correct --memory 0.42 "${T[@]}" &
+ocrfix corrupt data/real/chunks_clean $E data/real/train/corrupt_dpo.jsonl --set seed=7
+ocrfix data dpo data/real/dpo/pairs.jsonl --synthetic data/real/train/corrupt_dpo.jsonl \
+  --gold data/real/gold_chunks/dpo --exclude data/real/sft/train.jsonl "${T[@]}"
+# stop the engines, then
+ocrfix train dpo data/real/dpo/pairs.jsonl runs/sft runs/dpo
+ocrfix train merge runs/dpo runs/dpo_merged
+
+# 5. measure on the gold eval documents (engines as in 4)
+ocrfix score data/real/gold_chunks/eval data/real/eval/scored
+ocrfix correct data/real/eval/scored data/real/eval/sft "${T[@]}"
+ocrfix eval data/real/gold/truth sft=data/real/eval/sft data/real/eval/report
+
+# 6. the corpus (engines as in 4)
+ocrfix chunk data/real/corpus data/real/chunks
+ocrfix score data/real/chunks data/real/scored_raw \
+  --set score.noise.remove=false --set score.noise.whole_chunks=false   # pass 1: scores only
+ocrfix calibrate-noise-chunk data/real/gold_chunks data/real/scored_raw    # whole-chunk limit
+#   look at data/calibration/noise_chunk_hist.png and noise_chunk_samples.md
+#   (any time, no GPU: ocrfix bpc-hist data/real/scored_raw --out bpc_hist.png);
+#   edit noise_chunk in calibration.yaml if needed
+ocrfix score data/real/chunks data/real/scored                             # pass 2: noise removed
+ocrfix correct data/real/scored data/real/refined "${T[@]}"
+ocrfix report data/real/refined --clean data/real/calib/clean_scored
+ocrfix reconstruct data/real/refined data/real/corrected --source current
+```
+
+What to check after each step, and the options, are in [docs/real_data.md](docs/real_data.md).
+Every command resumes where it stopped: run it again after an interruption.
+
+### B. A CPU server and a GPU server (H200x8)
+
+Keep the project and all data on the **CPU server**. The **GPU server** only serves the models
+and trains. Commands that send requests (`score`, `correct`, `data dpo`, `calibrate-noise`) run
+on the CPU server and talk to the GPU server over the network. So does
+`calibrate-noise-chunk` (it scores the gold).
+
+| step | runs on |
+|---|---|
+| `gold chunks`, `errors table`, `chunk`, `corrupt`, `data sft`, `calibrate`, `bpc-hist`, `eval`, `report`, `reconstruct` | CPU server |
+| `score`, `correct`, `data dpo`, `calibrate-noise`, `calibrate-noise-chunk` (send requests to the GPU server) | CPU server |
+| `serve` (the vLLM engines), `train sft` / `dpo` / `merge` | **GPU server** |
+
+**Set up once:**
+1. Install ocrfix on both machines (same wheelhouse).
+2. The GPU server needs the full model, e.g. `/models/Qwen3.5-9B`. The CPU server needs only
+   its small files at the **same path**: `config.json`, `generation_config.json`,
+   `tokenizer.json`, `tokenizer_config.json` (to count tokens; it never loads the weights).
+3. In `configs/profiles/h200x8.yaml`, set `hw.infer.host` to the GPU server's LAN address
+   (e.g. `10.0.0.20`) on both machines. The engines listen on it; the CPU server sends to it.
+   Base engines are on ports 8000–8007, tuned engines on 8100–8107, both on every GPU.
+4. On both machines: `export OCRFIX_PROFILE=h200x8`.
+5. Check from the CPU server, once the engines run: `curl http://10.0.0.20:8000/health`.
+6. If both machines can mount the same storage, put the project there: then nothing needs
+   copying.
+
+**Run** (`[cpu]` / `[gpu]` = where; the same commands as in A):
+
+```
+[cpu] gold chunks, errors table, chunk clean                      (step 1)
+[gpu] ocrfix serve                                                (base engines; leave running)
+[cpu] calibrate-noise, corrupt, score, calibrate                  (step 2)
+[cpu] corrupt, data sft                                           (step 3, data part)
+      copy data/real/sft/ to the GPU server
+[gpu] stop the engines; ocrfix train sft ...; ocrfix train merge runs/sft /models/ocrfix-sft
+[gpu] ocrfix serve &   ocrfix serve --correct --set correct.model=/models/ocrfix-sft &
+[cpu] data dpo ... --set correct.model=/models/ocrfix-sft          (step 4)
+      copy pairs.jsonl to the GPU server; [gpu] stop the engines; train dpo; merge
+[gpu] serve base + tuned again
+[cpu] score, correct, eval (step 5); chunk, score (pass 1), calibrate-noise-chunk,
+      score (pass 2), correct, report, reconstruct (step 6)
+      with --set correct.model=<the merged model's path on the GPU server>
+```
+
+- **Network:** scoring sends token ids and gets one number back per token: roughly 1–2 TB of
+  responses for a 15B-token corpus. Fine on 10 Gb Ethernet.
+- **Security:** the engines have no password; the GPU server must be reachable only from your
+  internal network.
+- **Interrupted?** Every `score` / `correct` run skips finished shards; run it again.
+
+## Settings
+
+Each step has one file, `configs/stages/<step>.yaml`; the machine has one file,
+`configs/profiles/<machine>.yaml`. Edit a file, or change one run with `--set key=value`.
+
+| file | what you set there |
+|---|---|
+| `stages/chunk.yaml` | chunk size, which files, what is masked |
+| `stages/score.yaml` | vLLM or transformers, spike threshold, noise removal (set by `calibrate-noise`), whole-chunk removal on/off (`score.noise.whole_chunks`), the calibration file |
+| `stages/gold.yaml` | gold split (eval / dpo shares), error-table options |
+| `stages/corrupt.yaml` | the damage generator |
+| `stages/calibrate.yaml` | allowed false flags; the whole-chunk limit's margin over real gold text (`noise_chunk.margin`, 1.0 bits/char); how much real text noise removal may delete (1 in 10,000) |
+| `stages/sft.yaml` | SFT data mix, junk, lost words (`sft.lost.prob`, off), gold repeats; lr, epochs, LoRA, batch |
+| `stages/dpo.yaml` | DPO sampling and pair types; beta, lr, epochs, reference |
+| `stages/correct.yaml` | the correction model (`correct.model`), which languages to correct (`langs`), vLLM or transformers, decoding, the checks and the re-score rule |
+| `stages/eval.yaml` | eval options |
+| `stages/reconstruct.yaml` | when a nearly empty corrected document is dropped (`min_letters` 300, `min_kept_share` 0.1) |
+| `profiles/<machine>.yaml` | the base model path, GPUs, training batch and mode, vLLM engines (count, memory, host, ports) |
+| `default.yaml` | seed, work folder, language rule |
+
+- **Each setting lives in exactly one place.** A setting in two stage files is an error, and a
+  profile may set only `model` and `hw`.
+- **Derived, never set by hand:** the tokenizer is the model's; the server addresses come from
+  `hw.infer` (`host`, `base_port`, `correct_port`); the names vLLM serves the models under
+  come from `model` / `correct.model`; one `seed`.
+- **Precedence:** `default.yaml`, every `stages/*.yaml`, the profile, then `--set`.
+- **Check a value:** `ocrfix config --key score.noise.min_chars`.
+- **Profiles:** `rtx5090` (default), `h200x4`, `h200x8`; several machines serving different
+  models: `configs/profiles/cluster.yaml.example`.
+- **After switching 4B → 9B:** run `calibrate-noise` and `calibrate` again; scores belong to
+  one model.
+
+## Results so far (generated test data)
+
+| what | result |
+|---|---|
+| `chunk` / `reconstruct` | byte-exact on 50 MB |
+| SFT on the 4B (QLoRA, 1 epoch, 64 min) | document CER 0.58% → 0.13% (flagged chunks), 0.01% (`--all`); base model 0.23% |
+| DPO | runs; on test data the SFT model was right on 1,299 of 1,300 new prompts, so DPO had nothing to learn |
+| `〈?〉` for destroyed words | the model marked 63% of them instead of guessing (old model: guessed 97%). **Off by default** (`sft.lost.prob: 0`): a marked sentence would have to be dropped from training text |
+| noise removal (`calibrate-noise`, 697 test gold chunks) | at most 1 in 10,000 real characters removed: 60% of inserted junk found, 0.0096% of real text removed (the hand-set values: 72%, 0.024%) |
+| whole-chunk noise (4B; limits from synthetic data en 3.9 / ko 5.1 / mixed 4.2, from the test gold en 2.0 / ko 4.6 / mixed 2.6 bits per char) | 0 of 13,614 test OCR chunks dropped (highest bpc 3.5); 60 of 60 all-garbage chunks dropped; 60 of 60 half-garbage chunks kept (word-level removal cleaned them) |
+| vLLM vs transformers (`compare`) | flags agree on 99.6% of chunks, greedy answers identical on 100% |
+
+The test text comes from templates, so these numbers are optimistic. The real measure is your
+gold (`ocrfix eval`).
+
+## Test data and tests
+
+```bash
+python scripts/make_test_corpus.py data/test --ocr-mb 50 --clean-mb 20   # generated, ~2 s
+pytest                                     # ~1 min, a tiny random model, never uses the network
 ruff check . && ruff format --check .
 ```
+
+`make_test_corpus.py` writes `ocr/` (with injected errors), `truth/` (the answer key), `clean/`
+and `ocr_errors.jsonl`. With `--lost-words 0.003`, `ocr/` + `truth/` work as a gold set
+(`mkdir -p data/test/gold && ln -s ../ocr data/test/gold/ocr && ln -s ../truth data/test/gold/truth`).
 
 ## Layout
 
 ```
-configs/default.yaml        all settings except hardware
+configs/default.yaml        shared settings (seed, work folder, language rule)
+configs/stages/*.yaml       one file per step
 configs/profiles/           one file per machine: model path + GPU settings
+src/ocrfix/cli.py           the `ocrfix` commands
 src/ocrfix/chunks/          chunk, reconstruct
-src/ocrfix/refine/          refine score / correct / summary (chunks)
-src/ocrfix/scorer/          paragraph scoring; its model code is the transformers backend
-src/ocrfix/llm/             correct (vLLM client, prompt, parsing)
-src/ocrfix/verify/          verify
-src/ocrfix/calibrate/       flag thresholds
-src/ocrfix/gold/ errors/ corrupt/ data/ train/ eval/   training side
-scripts/                    install, serve_vllm.sh, train.sh, make_test_corpus.py
-docs/                       runbook, annotation guideline
+src/ocrfix/stages/          score, correct, corrupt, data sft|dpo, eval, compare, summary, report
+src/ocrfix/serve.py         ocrfix serve (vLLM engines)
+src/ocrfix/calibrate/       calibrate (flag rule), calibrate-noise (noise thresholds)
+src/ocrfix/gold/ errors/ corrupt/ train/   gold chunks, error tables, damage generator, training
+src/ocrfix/scorer/ llm/ verify/ eval/ data/ corpus/   scoring model, vLLM client, checks, metrics, text analysis
+scripts/                    make_wheelhouse.py, install_offline.py, make_test_corpus.py
+docs/                       real_data.md, annotation_guideline.md, runbook.md
 ```

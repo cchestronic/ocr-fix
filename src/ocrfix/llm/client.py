@@ -56,7 +56,7 @@ class Client:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if not urls:
-            raise ValueError("llm: no server URLs (hw.infer.urls)")
+            raise ValueError("no server URLs (hw.infer.score_urls / correct_urls)")
         self.urls = [u.rstrip("/") for u in urls]
         self._next = itertools.cycle(range(len(self.urls)))
         self.concurrency = concurrency

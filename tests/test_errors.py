@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 from ocrfix.cli import app
 from ocrfix.errors import TYPES, align, build, diff_ops, to_jamo, write_outputs
-from ocrfix.errors.table import compare_forms, glyphs, mask_like
+from ocrfix.errors.table import compare_forms, glyphs
 
 # 10 hand-written (source, gold) pairs; together they cover every op type.
 # Each expectation is the list of (key, src, gold) in order of position.
@@ -133,13 +133,9 @@ def test_positions_and_alignment():
     assert diff_ops("same text", "same text") == []
 
 
-def test_compare_forms_and_mask_like():
+def test_compare_forms():
     src, _, kept = compare_forms(gold_row(3, "ko"))
     assert src == "제안한 방법 $\\mathrm{Ol}$ 기존 방법보다 우수하다." and kept == {}
-    kept = {"⟨M1⟩": "$x$", "⟨M2⟩": "$L$"}
-    assert mask_like("Given $x$ the loss $L$ is", kept) == "Given ⟨M1⟩ the loss ⟨M2⟩ is"
-    # a fixer that altered math leaves it raw (so it counts as residual error)
-    assert mask_like("Given $y$ the loss $L$", kept) == "Given $y$ the loss ⟨M2⟩"
 
 
 def test_jamo_and_glyphs():
@@ -150,10 +146,8 @@ def test_jamo_and_glyphs():
 
 def test_tables(tmp_path):
     rows = [gold_row(i, "ko" if i in (0, 3, 7, 8) else "en") for i in range(len(PAIRS))]
-    # the fixer fixed everything in pair 1 (index 1) and nothing in pair 0
-    fixed = {("d1", "p00000"): PAIRS[1][1], ("d0", "p00000"): PAIRS[0][0]}
-    res = build(rows, fixed)
-    assert res.n_rows == 10 and res.n_fixed_missing == 8
+    res = build(rows)
+    assert res.n_rows == 10
     paths = write_outputs(res, tmp_path, top_k=50)
     assert [p.name for p in paths] == ["error_table.json", "confusion_map.json", "summary.md"]
 
@@ -172,11 +166,6 @@ def test_tables(tmp_path):
     top = table["char_confusions"]["*"]
     assert {(c["src"], c["gold"]) for c in top} == {("걸", "결"), ("1", "l"), ("rn", "m")}
 
-    # residual: pair 1 fully fixed, pair 0 untouched -> only pair 0's 3 ops remain
-    resid = {(g["lang"], g["stratum"]): g for g in table["residual"]["groups"]}
-    assert resid[("*", "*")]["n_paragraphs"] == 2
-    assert resid[("*", "*")]["n_ops"] == 3
-
     cmap = json.loads(paths[1].read_text("utf-8"))["hangul_garbled"]
     assert cmap == [
         {
@@ -188,15 +177,13 @@ def test_tables(tmp_path):
         }
     ]
     md = paths[2].read_text("utf-8")
-    assert "## Rates per language" in md and "ko residual" in md and "`Ol`" in md
+    assert "## Rates per language" in md and "`Ol`" in md
 
 
 def test_errors_cli(tmp_path):
     rows = [gold_row(i, "en") for i in range(len(PAIRS))]
     gold = tmp_path / "gold_train.jsonl"
     gold.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), "utf-8")
-    fixed = tmp_path / "fixed.jsonl"
-    fixed.write_text(json.dumps({"doc_id": "d1", "para_id": "p00000", "text": PAIRS[1][1]}) + "\n")
     res = CliRunner().invoke(
         app,
         [
@@ -204,12 +191,10 @@ def test_errors_cli(tmp_path):
             "table",
             str(gold),
             str(tmp_path / "out"),
-            "--fixed",
-            str(fixed),
             "--limit",
             "5",
         ],
     )
     assert res.exit_code == 0, res.output
-    assert "5 paragraphs" in res.output and "residual: 0 ops" in res.output
+    assert "5 chunks" in res.output
     assert (tmp_path / "out" / "summary.md").exists()

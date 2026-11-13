@@ -73,9 +73,23 @@ def test_tagger(text, expected):
         ("본 논문에서는 Transformer encoder 와 attention mechanism 을 사용한다.", "mixed"),
         ("$$x^2$$", "other"),
         ("12", "other"),
-        ("これは日本語です", "other"),
+        ("これは日本語です", "cjk"),
         ("<table><tr><td>정확도</td></tr></table>", "ko"),
     ],
 )
 def test_detect_lang(text, lang):
+    assert detect_lang(text, tag_spans(text)) == lang
+
+
+@pytest.mark.parametrize(
+    ("text", "lang"),
+    [
+        ("본 연구(硏究)는 기존 방법(方法)보다 우수함을 확인하였다. 漢字 表記도 쓴다.", "ko"),
+        ("本文提出了一种新的光学字符识别方法，实验结果表明该方法有效。", "cjk"),
+        ("この方法は有効である。日本語の文です。", "cjk"),
+        ("The model works well on the 北京 data set and others.", "en"),
+    ],
+)
+def test_cjk_language(text, lang):
+    """Chinese / Japanese chunks are `cjk`; Hanja in Korean text doesn't push it out of `ko`."""
     assert detect_lang(text, tag_spans(text)) == lang

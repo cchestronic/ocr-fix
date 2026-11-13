@@ -1,0 +1,17 @@
+# `ocrfix chunk` (and `gold chunks`): markdown -> masked chunks.
+
+chunk:
+  min_tokens: 512                     # a chunk ends at the best break in [min, max] tokens,
+  max_tokens: 768                     # counted on the masked text with the model's tokenizer
+  glob: "**/*.md"                     # the markdown files under the input folder
+  sample_frac: null                   # keep this share of documents (by path hash); null = all
+  workers: null                       # processes; null = every CPU core
+  shard_bytes: 33554432               # input markdown per output shard (32 MB)
+  gzip: false                         # write part-*.jsonl.gz instead of part-*.jsonl
+  # Masked as ⟨P#⟩ in prose, like math ⟨M#⟩ and tables ⟨T#⟩ (corpus/protect.py). Regexes:
+  #   images     ![alt](path)            code    `inline code` (not fenced blocks)
+  #   urls       http(s)://..., www...   emails  name@host.tld
+  #   dois       10.NNNN/...             citations  [12], [3, 5-7] (numeric only)
+  # Remove a kind to have it scored and corrected like ordinary prose. Changing this list
+  # changes the chunks and scores: chunk, score and calibrate again.
+  protect: [images, code, urls, emails, dois, citations]

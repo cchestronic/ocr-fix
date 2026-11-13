@@ -1,16 +1,18 @@
+"""The damage generators (`corrupt/ops.py`, `corrupt_text`): rates, types, spans, seeds.
+`ocrfix corrupt` (tests/test_score_correct.py) applies them to chunks."""
+
 from __future__ import annotations
 
-import json
 import random
 from collections import Counter
 
 import pytest
-from typer.testing import CliRunner
 
-from ocrfix.cli import app
 from ocrfix.corpus import tag_spans
-from ocrfix.corrupt import corrupt_file
+from ocrfix.corrupt import build_models, corrupt_text, rng_for
+from ocrfix.corrupt.run import ALL
 from ocrfix.errors import diff_ops
+from ocrfix.schema import Span
 
 OPTS = {
     "rate_scale": 1.0,
@@ -141,18 +143,28 @@ def make_clean(n: int, seed: int = 0) -> list[dict]:
     return rows
 
 
+def corrupt_rows(rows, seed: int, n_variants: int) -> list[dict]:
+    """Each clean row damaged ``n_variants`` times, one random stream per (doc, row, variant)."""
+    models = build_models(TABLE, CMAP, OPTS)
+    out = []
+    for row in rows:
+        model = models.get(row["lang"]) or models[ALL]
+        spans = [Span.from_dict(x) for x in row["spans"]]
+        for v in range(n_variants):
+            rng = rng_for(seed, f"{row['doc_id']}\x00table", row["para_id"], v)
+            source, new_spans, ops, err = corrupt_text(row["text"], spans, model, rng)
+            out.append({"doc_id": row["doc_id"], "src_para_id": row["para_id"], "variant": v,
+                        "lang": row["lang"], "source_text": source, "gold_text": row["text"],
+                        "spans": [x.to_dict() for x in new_spans], "gold_spans": row["spans"],
+                        "error_rate": round(err, 3), "applied_ops": ops})  # fmt: skip
+    return out
+
+
 @pytest.fixture(scope="module")
 def corrupted(tmp_path_factory):
     d = tmp_path_factory.mktemp("corrupt")
-    clean = d / "clean.jsonl"
-    clean.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in make_clean(1000)))
-    (d / "table.json").write_text(json.dumps(TABLE, ensure_ascii=False))
-    (d / "cmap.json").write_text(json.dumps(CMAP, ensure_ascii=False))
-    n = corrupt_file(
-        clean, d / "table.json", d / "cmap.json", d / "out.jsonl", seed=7, n_variants=1, opts=OPTS
-    )
-    assert n == 1000
-    rows = [json.loads(x) for x in (d / "out.jsonl").read_text("utf-8").splitlines()]
+    rows = corrupt_rows(make_clean(1000), seed=7, n_variants=1)
+    assert len(rows) == 1000
     return d, rows
 
 
@@ -226,52 +238,17 @@ def test_garbled_wrap_probability(corrupted):
     assert all(o["src"] == "E" for o in ops if o["gold"] == "는" and not o["wrapped"])
 
 
-def test_seed_reproducibility(tmp_path, corrupted):
-    d, _ = corrupted
+def test_seed_reproducibility():
     clean = make_clean(40)
-    lines = [json.dumps(r, ensure_ascii=False) + "\n" for r in clean]
-    (tmp_path / "a.jsonl").write_text("".join(lines))
-    (tmp_path / "b.jsonl").write_text("".join(reversed(lines)))
-
-    def run(src, out, seed, n=3):
-        corrupt_file(
-            src, d / "table.json", d / "cmap.json", out, seed=seed, n_variants=n, opts=OPTS
-        )
-        return [json.loads(x) for x in out.read_text("utf-8").splitlines()]
-
-    a = run(tmp_path / "a.jsonl", tmp_path / "a.out", 1)
-    assert a == run(tmp_path / "a.jsonl", tmp_path / "a2.out", 1)
+    a = corrupt_rows(clean, seed=1, n_variants=3)
+    assert a == corrupt_rows(clean, seed=1, n_variants=3)
     # input order doesn't matter: each (doc, para, variant) has its own stream
-    b = run(tmp_path / "b.jsonl", tmp_path / "b.out", 1)
+    b = corrupt_rows(list(reversed(clean)), seed=1, n_variants=3)
     key = lambda r: (r["doc_id"], r["src_para_id"], r["variant"])  # noqa: E731
     assert sorted(a, key=key) == sorted(b, key=key)
     assert len(a) == 120 and {r["variant"] for r in a} == {0, 1, 2}
     # variants differ, other seeds differ
     by = {key(r): r["source_text"] for r in a}
     assert sum(by[(k[0], k[1], 0)] != by[(k[0], k[1], 1)] for k in by if k[2] == 0) > 30
-    c = run(tmp_path / "a.jsonl", tmp_path / "c.out", 2)
+    c = corrupt_rows(clean, seed=2, n_variants=3)
     assert [r["source_text"] for r in a] != [r["source_text"] for r in c]
-
-
-def test_gold_rows_and_cli(tmp_path, corrupted):
-    d, _ = corrupted
-    gold = {
-        "doc_id": "g",
-        "para_id": "p00000",
-        "lang": "ko",
-        "stratum": "ko:low",
-        "gold_text": "제안한 방법이 ⟨M1⟩ 보다 우수함을 확인하였다.",
-        "gold_raw": "제안한 방법이 $x$ 보다 우수함을 확인하였다. " * 4,
-    }
-    (tmp_path / "gold.jsonl").write_text(json.dumps(gold, ensure_ascii=False) + "\n")
-    res = CliRunner().invoke(
-        app,
-        [
-            "corrupt", str(tmp_path / "gold.jsonl"), str(d / "table.json"), str(d / "cmap.json"),
-            str(tmp_path / "pairs.jsonl"), "--n-variants", "2", "--seed", "3",
-        ],
-    )  # fmt: skip
-    assert res.exit_code == 0, res.output
-    rows = [json.loads(x) for x in (tmp_path / "pairs.jsonl").read_text("utf-8").splitlines()]
-    assert len(rows) == 2 and rows[0]["gold_text"] == gold["gold_raw"]
-    assert rows[0]["stratum"] == "ko:low" and rows[0]["source_text"].count("$x$") == 4

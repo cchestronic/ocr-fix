@@ -1,6 +1,6 @@
-"""`ocrfix corrupt`: synthetic OCR noise on clean paragraphs, at measured rates.
+"""Synthetic OCR damage at measured rates (used by `ocrfix corrupt`, stages/corrupt.py).
 
-Per (paragraph, variant), with ``random.Random(sha256(seed, doc_id, para_id, variant))``:
+Per (chunk, variant), with ``random.Random(sha256(seed, doc_id, chunk_id, variant))``:
   1. Draw a per-paragraph rate (ops per 1000 prose chars) from the paragraph's language
      histogram in ``error_table.json`` (bin by count, uniform inside it; the open last bin
      spans [a, 2a)). With ``corrupt.match_total`` the draw is scaled so its mean equals the
@@ -17,20 +17,14 @@ shifted clean spans, plus a math span for every hangul_garbled run wrapped in ``
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import random
-from collections.abc import Iterator
 from dataclasses import dataclass
-from itertools import islice
-from pathlib import Path
 from typing import Any
 
-from ocrfix.corpus import tag_spans
 from ocrfix.corrupt.ops import GENERATORS, Edit, Paragraph, Resources
 from ocrfix.errors.align import SPACING
-from ocrfix.io import iter_jsonl, open_text
-from ocrfix.schema import Span, nfc
+from ocrfix.schema import Span
 
 ALL = "*"
 
@@ -177,93 +171,6 @@ def _tile(spans: list[Span], n: int) -> list[Span]:
     if pos < n:
         out.append(Span(pos, n, "prose"))
     return out
-
-
-def clean_rows(path: Path, limit: int | None = None) -> Iterator[dict[str, Any]]:
-    """Paragraph Records (text + spans), or gold rows (gold_raw / gold_text), as Records."""
-    for d in islice(iter_jsonl(path), limit):
-        if "text" in d and "spans" in d:
-            text = nfc(d["text"])
-            spans = [Span.from_dict(s) for s in d["spans"]]
-            if text != d["text"]:  # offsets were for the un-normalized text
-                spans = tag_spans(text)
-        else:
-            text = nfc(d.get("gold_raw") or d["gold_text"])
-            spans = tag_spans(text)
-        yield {**d, "text": text, "spans": spans}
-
-
-def corrupt_file(
-    clean: Path,
-    table_path: Path,
-    cmap_path: Path,
-    out: Path,
-    *,
-    seed: int,
-    n_variants: int,
-    rate: float | None = None,
-    opts: dict[str, Any],
-    limit: int | None = None,
-) -> int:
-    with open(table_path, encoding="utf-8") as f:
-        table = json.load(f)
-    with open(cmap_path, encoding="utf-8") as f:
-        cmap = json.load(f)
-    models = build_models(table, cmap, opts)
-    tag = "table" if rate is None else f"r{rate:g}"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(out.name + ".tmp")
-    n = 0
-    with open_text(tmp, "wt") as f:
-        for row in clean_rows(clean, limit):
-            lang = row.get("lang") or ALL
-            model = models.get(lang) or models[ALL]
-            for v in range(n_variants):
-                pid = str(row["para_id"])
-                rng = rng_for(seed, f"{row['doc_id']}\x00{tag}", pid, v)
-                source, spans, ops, err = corrupt_text(
-                    row["text"], row["spans"], model, rng, fixed_rate=rate
-                )
-                rec = {
-                    "doc_id": row["doc_id"],
-                    # unique per corruption setting and variant, so outputs can be pooled and
-                    # scored together (the scorer keys on doc_id + para_id)
-                    "para_id": f"{pid}~{tag}~v{v}",
-                    "src_para_id": pid,
-                    "corruption": tag,
-                    "variant": v,
-                    "order": row.get("order", 0),
-                    "lang": row.get("lang"),
-                    "source_path": row.get("source_path", ""),
-                    "text": source,
-                    "stratum": row.get("stratum"),
-                    "source_text": source,
-                    "gold_text": row["text"],
-                    "spans": [s.to_dict() for s in spans],
-                    "gold_spans": [s.to_dict() for s in row["spans"]],
-                    "error_rate": round(err, 3),
-                    "applied_ops": ops,
-                }
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                n += 1
-    tmp.replace(out)
-    return n
-
-
-def run_corrupt(
-    cfg, clean, table, cmap, out, *, n_variants=None, seed=None, rate=None, limit=None
-) -> int:
-    return corrupt_file(
-        clean,
-        table,
-        cmap,
-        out,
-        seed=int(cfg.seed if seed is None else seed),
-        n_variants=int(cfg.corrupt.variants_per_para if n_variants is None else n_variants),
-        rate=rate,
-        opts=corrupt_opts(cfg),
-        limit=limit,
-    )
 
 
 def corrupt_opts(cfg) -> dict[str, Any]:

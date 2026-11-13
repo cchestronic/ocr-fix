@@ -1,5 +1,5 @@
-"""transformers generation behind vLLM's chat API (`refine.generator: transformers`) and
-`refine compare`, on the tiny random Qwen3.5 (hybrid: linear + full attention)."""
+"""transformers generation behind vLLM's chat API (`correct.backend: transformers`) and
+`compare`, on the tiny random Qwen3.5 (hybrid: linear + full attention)."""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ import shutil
 import httpx
 import numpy as np
 import pytest
-from tests.test_refine import rows, setup  # noqa: F401  (fixture)
+from tests.test_score_correct import rows, setup  # noqa: F401  (fixture)
 
 from ocrfix.config import load_config
 from ocrfix.llm.client import Client
 from ocrfix.llm.hf import HFGenerator, HFTransport
-from ocrfix.refine.compare import run_compare
-from ocrfix.refine.run import run_correct, run_score
-from ocrfix.refine.score import TransformersScorer
+from ocrfix.stages.compare import run_compare
+from ocrfix.stages.run import run_correct, run_score
+from ocrfix.stages.score import TransformersScorer
 
 LN2 = math.log(2)
 CHAT_TEMPLATE = (
@@ -43,7 +43,7 @@ def chat_dir(tiny_model_dir, tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def gen(chat_dir, model_device):
-    cfg = load_config("rtx5090", [f"paths.base_model={chat_dir}", "hw.dtype=float32"])
+    cfg = load_config("rtx5090", [f"model={chat_dir}", "hw.dtype=float32"])
     return HFGenerator(cfg)
 
 
@@ -120,13 +120,13 @@ def test_transport_batches_concurrent_requests(gen):
 def test_correct_through_transformers(setup, chat_dir, model_device):  # noqa: F811
     tmp, cfg, fake = setup
     run_score(
-        cfg("refine.noise.remove=false"),
+        cfg("score.noise.remove=false"),
         tmp / "chunks",
         tmp / "scored",
         transport=httpx.MockTransport(fake),
     )
-    c = cfg("refine.generator=transformers", f"llm.model={chat_dir}", "llm.max_tokens_extra=4",
-            "llm.max_tokens_factor=0.1")  # fmt: skip
+    c = cfg("correct.backend=transformers", f"correct.model={chat_dir}",
+            "correct.max_tokens_extra=4", "correct.max_tokens_factor=0.1")  # fmt: skip
     run_correct(
         c, tmp / "scored", tmp / "out", select_all=True, transport=httpx.MockTransport(fake)
     )
@@ -162,12 +162,12 @@ class SameModelVLLM:
 def test_compare_finds_no_difference_with_the_same_model(setup, chat_dir, model_device):  # noqa: F811
     tmp, cfg, fake = setup
     run_score(
-        cfg("refine.noise.remove=false"),
+        cfg("score.noise.remove=false"),
         tmp / "chunks",
         tmp / "scored",
         transport=httpx.MockTransport(fake),
     )
-    c = cfg(f"paths.base_model={chat_dir}", "llm.max_tokens_extra=4", "llm.max_tokens_factor=0.1")
+    c = cfg(f"model={chat_dir}", "correct.max_tokens_extra=4", "correct.max_tokens_factor=0.1")
     rep = run_compare(c, tmp / "scored", tmp / "cmp.json", limit=10,
                       transport=httpx.MockTransport(SameModelVLLM(c)))  # fmt: skip
     s = rep["score"]
@@ -175,3 +175,24 @@ def test_compare_finds_no_difference_with_the_same_model(setup, chat_dir, model_
     assert s["flag_agree"] == 1.0 and s["noise_agree"] in (None, 1.0)
     assert rep["generate"]["exact"] == 1.0 and rep["pass"] == {"flags": True, "greedy": True}
     assert json.loads((tmp / "cmp.json").read_text())["chunks"] == rep["chunks"]
+
+
+def test_out_of_memory_splits_the_batch(gen, monkeypatch):
+    import torch
+
+    real = gen._generate
+    sizes = []
+
+    def small_gpu(bodies):
+        sizes.append(len(bodies))
+        if len(bodies) > 2:
+            raise torch.OutOfMemoryError("pretend")
+        return real(bodies)
+
+    monkeypatch.setattr(gen, "_generate", small_gpu)
+    texts = [f"Text {i} here." for i in range(5)]
+    out = gen.generate([body(t) for t in texts])
+    single = [real([body(t)])[0] for t in texts]
+    assert [r["choices"] for r in out] == [r["choices"] for r in single]
+    # 5 fails -> 2 + 3; 3 fails -> 1 + 2: every request answered once, in order
+    assert sizes == [5, 2, 3, 1, 2]

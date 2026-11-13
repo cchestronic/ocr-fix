@@ -1,14 +1,9 @@
-"""`ocrfix errors table`: OCR error statistics from gold rows (and residuals after fixing).
+"""`ocrfix errors table`: OCR error statistics from gold chunks.
 
-Each gold row (from ``ocrfix gold import``) is compared in placeholder form:
+Each gold row (`gold chunks` output, ``gold_status: ok``) is compared in placeholder form:
 ``source_text`` with its ``misclassified-text`` spans expanded back to raw text, vs
 ``gold_text``. Kept placeholders (``⟨M1⟩``) match on both sides, so math and tables never
 produce ops. Rates are ops per 1000 gold chars, with placeholders excluded from the count.
-
-With ``--fixed``, the fixer output (``text``, the source after fixers, keyed by doc_id and
-para_id) is masked the same way (each kept placeholder's raw text is swapped back for the
-placeholder, in order; altered math stays raw and shows up as residual errors) and compared
-to the same gold: the residual table.
 
 Outputs in ``out_dir``: ``error_table.json`` (groups per lang x stratum, per lang and
 overall: counts, per-1000 rates, histogram of per-paragraph op rate; top char confusions),
@@ -87,19 +82,6 @@ def compare_forms(row: dict[str, Any]) -> tuple[str, str, dict[str, str]]:
         else:
             kept[ph] = nfc(raw)
     return src, gold, kept
-
-
-def mask_like(text: str, kept: dict[str, str]) -> str:
-    """Put kept placeholders back into raw (fixer) text: each raw span, in order."""
-    out, pos = [], 0
-    for ph, raw in kept.items():
-        i = text.find(raw, pos)
-        if i < 0:
-            continue
-        out += [text[pos:i], ph]
-        pos = i + len(raw)
-    out.append(text[pos:])
-    return "".join(out)
 
 
 def n_chars(gold: str) -> int:
@@ -214,41 +196,18 @@ def _group_order(key: tuple[str, str]) -> tuple:
 @dataclass
 class TableResult:
     table: Table
-    residual: Table | None
     n_rows: int
-    n_fixed_missing: int = 0
 
 
-def build(
-    gold_rows: Iterable[dict[str, Any]],
-    fixed: dict[tuple[str, str], str] | None = None,
-    **opts: Any,
-) -> TableResult:
+def build(gold_rows: Iterable[dict[str, Any]], **opts: Any) -> TableResult:
     table = Table()
-    residual = Table() if fixed is not None else None
-    missing = n_rows = 0
+    n_rows = 0
     for row in gold_rows:
         n_rows += 1
-        src, gold, kept = compare_forms(row)
+        src, gold, _ = compare_forms(row)
         lang, stratum = row.get("lang") or "other", row.get("stratum") or ""
-        chars = n_chars(gold)
-        table.add(lang, stratum, chars, diff_ops(src, gold, **opts))
-        if residual is not None:
-            text = fixed.get((str(row["doc_id"]), str(row["para_id"])))
-            if text is None:
-                missing += 1
-                continue
-            residual.add(lang, stratum, chars, diff_ops(mask_like(nfc(text), kept), gold, **opts))
-    return TableResult(table, residual, n_rows, missing)
-
-
-def read_fixed(path: Path) -> dict[tuple[str, str], str]:
-    out = {}
-    for d in iter_jsonl(path):
-        text = d.get("text", d.get("fixed_text"))
-        if text is not None:
-            out[(str(d["doc_id"]), str(d["para_id"]))] = text
-    return out
+        table.add(lang, stratum, n_chars(gold), diff_ops(src, gold, **opts))
+    return TableResult(table, n_rows)
 
 
 def _md_table(header: list[str], rows: list[list[Any]]) -> list[str]:
@@ -259,32 +218,20 @@ def _md_table(header: list[str], rows: list[list[Any]]) -> list[str]:
 
 def summary_md(res: TableResult, top_k: int) -> str:
     t = res.table.to_dict(top_k)
-    r = res.residual.to_dict(top_k) if res.residual else None
     overall = [g for g in t["groups"] if g["stratum"] == ALL]
     langs = [g["lang"] for g in overall]
-    res_by = {g["lang"]: g for g in r["groups"] if g["stratum"] == ALL} if r else {}
 
     lines = [
         "# OCR error table",
         "",
-        f"{res.n_rows} gold paragraphs. Rates: ops per 1000 gold chars (placeholders excluded).",
+        f"{res.n_rows} gold chunks. Rates: ops per 1000 gold chars (placeholders excluded).",
+        "",
     ]
-    if r is not None:
-        lines.append(
-            f"Residual = fixer output vs gold ({res.n_fixed_missing} without fixer output)."
-        )
-    lines.append("")
-
-    header = ["type"]
-    for lang in langs:
-        header += [lang, f"{lang} residual"] if r else [lang]
+    header = ["type", *langs]
     rows = []
     for k in ["total", *TYPES]:
         cells: list[Any] = [f"**{k}**" if k == "total" else k]
-        for g in overall:
-            cells.append(_rate(g, k))
-            if r:
-                cells.append(_rate(res_by.get(g["lang"], {}), k))
+        cells += [_rate(g, k) for g in overall]
         if any(c is not None for c in cells[1:]):
             rows.append(cells)
     lines += ["## Rates per language", "", *_md_table(header, rows)]
@@ -295,7 +242,7 @@ def summary_md(res: TableResult, top_k: int) -> str:
         lines += ["## Spacing ops by script", "", *_md_table(["op", *langs], rows)]
 
     rows = [[b, *(g["histogram"][b] for g in overall)] for b in _bins()]
-    lines += ["## Paragraphs by total op rate", "", *_md_table(["ops/1000", *langs], rows)]
+    lines += ["## Chunks by total op rate", "", *_md_table(["ops/1000", *langs], rows)]
 
     conf = t["char_confusions"].get(ALL, [])[:20]
     if conf:
@@ -321,11 +268,7 @@ def _rate(g: dict[str, Any], k: str) -> float | None:
 def write_outputs(res: TableResult, out_dir: Path, top_k: int = 50) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     table = {"n_rows": res.n_rows, **res.table.to_dict(top_k)}
-    if res.residual is not None:
-        table["residual"] = {"n_fixed_missing": res.n_fixed_missing, **res.residual.to_dict(top_k)}
     cmap: dict[str, Any] = {"hangul_garbled": res.table.confusion_map()}
-    if res.residual is not None:
-        cmap["residual_hangul_garbled"] = res.residual.confusion_map()
     files = {
         out_dir / "error_table.json": json.dumps(table, ensure_ascii=False, indent=1) + "\n",
         out_dir / "confusion_map.json": json.dumps(cmap, ensure_ascii=False, indent=1) + "\n",
@@ -338,15 +281,12 @@ def write_outputs(res: TableResult, out_dir: Path, top_k: int = 50) -> list[Path
     return list(files)
 
 
-def run_table(
-    cfg, gold: Path, out_dir: Path, fixed: Path | None = None, limit: int | None = None
-) -> TableResult:
-    ec = cfg.errors
+def run_table(cfg, gold: Path, out_dir: Path, limit: int | None = None) -> TableResult:
+    ec = cfg.gold.errors
     # `gold chunks` rows: only chunks whose gold could be cut cleanly (gold_status ok)
     rows = (r for r in iter_jsonl(gold) if r.get("gold_status", "ok") == "ok")
     res = build(
         islice(rows, limit),
-        read_fixed(fixed) if fixed else None,
         header_footer_min_chars=int(ec.header_footer_min_chars),
         confusion_max_len=int(ec.confusion_max_len),
     )

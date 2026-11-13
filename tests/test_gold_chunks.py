@@ -1,4 +1,4 @@
-"""`ocrfix gold chunks` (md pairs -> chunk gold) and `ocrfix refine eval` (documents vs truth)."""
+"""`ocrfix gold chunks` (md pairs -> chunk gold) and `ocrfix eval` (documents vs truth)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from tests.test_chunks import chunk_cfg  # noqa: F401  (fixture)
 from ocrfix.corpus.placeholders import restore
 from ocrfix.gold.chunks import TruthMap, build_gold_chunks
 from ocrfix.io import iter_jsonl
-from ocrfix.refine.eval import run_refine_eval
+from ocrfix.stages.eval import run_eval
 
 OPTS = {"header_footer_min_chars": 8, "confusion_max_len": 4}
 
@@ -125,7 +125,7 @@ def _system(tmp_path: Path, name: str, rows: list[dict], fn) -> str:
     return f"{name}={d}"
 
 
-def test_refine_eval(tmp_path, gold, chunk_cfg):  # noqa: F811
+def test_eval_documents(tmp_path, gold, chunk_cfg):  # noqa: F811
     root, _ = gold
     out = tmp_path / "out"
     build_gold_chunks(chunk_cfg(), root, out, workers=0)
@@ -136,7 +136,7 @@ def test_refine_eval(tmp_path, gold, chunk_cfg):  # noqa: F811
                     lambda r: r["gold_text"].replace("〈?〉", "accuracy"))  # fmt: skip
     over = _system(tmp_path, "over", rows,
                    lambda r: r["gold_text"].replace("method", "〈?〉"))  # fmt: skip
-    res = run_refine_eval(root / "truth", [perfect, guess, over], tmp_path / "ev", opts=OPTS)
+    res = run_eval(root / "truth", [perfect, guess, over], tmp_path / "ev", opts=OPTS)
     m = {k: v["all"] for k, v in res["metrics"].items()}
     assert res["docs"] == 7
     assert m["ocr"]["cer"] > 0 and m["ocr"]["uncertain"]["left"] == 1.0

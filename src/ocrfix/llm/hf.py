@@ -1,14 +1,14 @@
 """Generation with transformers in this process, behind vLLM's chat API.
 
-``refine.generator: transformers`` puts an :class:`HFTransport` under the usual
-:class:`~ocrfix.llm.client.Client`, so `refine correct` and `refine dpo` send exactly the
+``correct.backend: transformers`` puts an :class:`HFTransport` under the usual
+:class:`~ocrfix.llm.client.Client`, so `correct` and `data dpo` send exactly the
 requests they send to vLLM (same body, same parsing). The transport:
 
 * renders ``messages`` with the tokenizer's chat template (``add_generation_prompt``,
   ``chat_template_kwargs`` such as ``enable_thinking``), as vLLM does, and tokenizes it
   without special tokens;
-* collects concurrent requests for ``refine.hf.wait`` seconds and runs them as one left-padded
-  ``generate`` batch of at most ``refine.hf.batch_size`` sequences, grouped by sampling
+* collects concurrent requests for ``correct.hf.wait`` seconds and runs them as one left-padded
+  ``generate`` batch of at most ``correct.hf.batch_size`` sequences, grouped by sampling
   settings (greedy, or temperature / top_p / n); ``n`` > 1 is ``num_return_sequences``; out of
   GPU memory, a batch is split in half and retried (answers are the same: batching doesn't
   change greedy outputs);
@@ -17,10 +17,11 @@ requests they send to vLLM (same body, same parsing). The transport:
   ``stop``; decodes with special tokens skipped (vLLM's default);
 * answers ``/health`` and ``/v1/chat/completions``; anything else is 404.
 
-Greedy answers should match vLLM's up to bf16 kernel differences (``ocrfix refine compare``
+Greedy answers should match vLLM's up to bf16 kernel differences (``ocrfix compare``
 measures it). Sampled answers never match token for token: the random streams differ.
-The model is ``llm.model`` (+ ``llm.adapter`` through peft, unmerged on ``hw.dtype`` weights;
-a QLoRA adapter was trained on nf4 weights, so serve its `train merge` output to match vLLM).
+The model is ``correct.model`` (else the base; + ``correct.adapter`` through peft, unmerged on
+``hw.dtype`` weights; a QLoRA adapter was trained on nf4 weights, so give its `train merge`
+output to match vLLM).
 """
 
 from __future__ import annotations
@@ -51,8 +52,10 @@ class HFGenerator:
         import torch
         from transformers import AutoTokenizer, GenerationConfig
 
-        llm = cfg.llm
-        path = str(llm.model)
+        from ocrfix.config import correct_model
+
+        path = correct_model(cfg)
+        adapter = cfg.correct.adapter
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         tok = AutoTokenizer.from_pretrained(tokenizer_path or path, local_files_only=True)
         tok.padding_side = "left"
@@ -63,10 +66,10 @@ class HFGenerator:
             from ocrfix.scorer.model import load_model
 
             model = load_model(path, str(cfg.hw.dtype), str(cfg.hw.attn_impl), self.device)
-            if llm.adapter:
+            if adapter:
                 from peft import PeftModel
 
-                model = PeftModel.from_pretrained(model, str(llm.adapter)).eval()
+                model = PeftModel.from_pretrained(model, str(adapter)).eval()
         self.model = model
         try:
             gc = GenerationConfig.from_pretrained(path, local_files_only=True)
@@ -202,5 +205,5 @@ class HFTransport(httpx.AsyncBaseTransport):
 
 
 def transport_from_cfg(cfg, model=None) -> HFTransport:
-    h = cfg.refine.hf
+    h = cfg.correct.hf
     return HFTransport(HFGenerator(cfg, model), int(h.batch_size), float(h.wait))

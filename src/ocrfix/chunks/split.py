@@ -1,6 +1,6 @@
 """One markdown document -> chunks of ``min_tokens``..``max_tokens`` masked tokens.
 
-**Masking.** Math ⟨M#⟩ and tables ⟨T#⟩ from the tagger, and ⟨P#⟩ for the ``llm.protect`` kinds
+**Masking.** Math ⟨M#⟩ and tables ⟨T#⟩ from the tagger, and ⟨P#⟩ for the ``chunk.protect`` kinds
 in prose. A literal placeholder already in the source becomes a ⟨P#⟩ too, so it survives the
 round trip. Masked items are atoms: a chunk never cuts one. Numbering is per chunk.
 

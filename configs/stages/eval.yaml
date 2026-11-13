@@ -1,0 +1,4 @@
+# `ocrfix eval`: whole corrected documents vs truth/. Error types: gold.errors.
+
+eval:
+  exact_max_n: 25                     # exact Wilcoxon p up to this many non-zero pairs

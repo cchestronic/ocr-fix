@@ -1,4 +1,4 @@
-"""Markdown documents <-> masked chunks of 512-768 tokens (the unit of refinement).
+"""Markdown documents <-> masked chunks of 512-768 tokens (the unit of scoring and correction).
 
 ``split``: one document -> chunks. ``run``: a folder tree -> JSONL shards, in parallel.
 ``rebuild``: chunks -> the original (byte-exact) or current markdown files.

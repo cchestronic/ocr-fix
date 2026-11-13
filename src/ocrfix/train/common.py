@@ -3,7 +3,7 @@ peak-VRAM logging. Everything hardware-specific comes from ``cfg.hw.train``.
 
 Chat rendering: examples are rendered with the tokenizer's chat template exactly as vLLM
 renders the inference prompt (``add_generation_prompt=True`` plus
-``chat_template_kwargs.enable_thinking = llm.enable_thinking``). The training target is the
+``chat_template_kwargs.enable_thinking = correct.enable_thinking``). The training target is the
 rest of the full conversation's rendering (assistant content and end-of-turn token), so
 loss falls on assistant tokens only and the model learns to stop.
 """
@@ -63,7 +63,7 @@ def resolve(cfg, *, mode: str | None = None) -> TrainSettings:
     if packing and (missing := missing_kernels()):
         raise ValueError(
             f"hw.train.packing needs the optional Qwen3.5 kernels; missing: {', '.join(missing)} "
-            "(scripts/install_offline.sh --with-kernels, or --set hw.train.packing=false)"
+            "(scripts/install_offline.py --with-kernels, or --set hw.train.packing=false)"
         )
     dtype = str(cfg.hw.dtype)
     fsdp = None
@@ -187,7 +187,7 @@ def render(
         raise ValueError(
             "chat template: the conversation with the answer does not start with the generation "
             "prompt (e.g. the template adds an empty think block at generation time that the "
-            "answer lacks); check data.empty_think against llm.enable_thinking"
+            "answer lacks); check sft.empty_think against correct.enable_thinking"
         )
     # the template closes the turn with "<end-of-turn>\n"; the newline is not a target
     return p, full[len(p) :].rstrip("\n")

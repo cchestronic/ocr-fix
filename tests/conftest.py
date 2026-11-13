@@ -31,11 +31,6 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(scope="session")
-def fixtures_dir() -> Path:
-    return FIXTURES
-
-
-@pytest.fixture(scope="session")
 def model_device() -> str:
     """Device for tiny-model tests. With flash-linear-attention installed, transformers routes
     Qwen3.5's linear-attention layers to Triton kernels regardless of device, so CPU fails."""

@@ -215,7 +215,7 @@ def chunk_cfg(tiny_model_dir):
     def make(*extra):
         return load_config(
             "rtx5090",
-            [f"paths.base_model={tiny_model_dir}", "chunk.min_tokens=64", "chunk.max_tokens=96",
+            [f"model={tiny_model_dir}", "chunk.min_tokens=64", "chunk.max_tokens=96",
              "chunk.shard_bytes=4000", *extra],
         )  # fmt: skip
 
@@ -261,7 +261,7 @@ def test_resume_refuses_another_chunking_and_runs_missing_parts(tmp_path, chunk_
 def test_gzip_limit_and_sample(tmp_path, chunk_cfg):
     root = tmp_path / "in"
     make_tree(root)
-    st = run_chunk(chunk_cfg("io.gzip=true"), root, tmp_path / "gz", workers=0, limit=2)
+    st = run_chunk(chunk_cfg("chunk.gzip=true"), root, tmp_path / "gz", workers=0, limit=2)
     assert st.docs + len(st.errors) == 2 and list((tmp_path / "gz").glob("part-*.jsonl.gz"))
     assert not run_rebuild(tmp_path / "gz", None).mismatched
     none = run_chunk(chunk_cfg(), root, tmp_path / "s", workers=0, sample_frac=1e-9)
@@ -271,7 +271,7 @@ def test_gzip_limit_and_sample(tmp_path, chunk_cfg):
 def test_cli_chunk_and_reconstruct(tmp_path, tiny_model_dir):
     root = tmp_path / "in"
     make_tree(root)
-    sets = ["--set", f"paths.base_model={tiny_model_dir}", "--set", "chunk.min_tokens=64",
+    sets = ["--set", f"model={tiny_model_dir}", "--set", "chunk.min_tokens=64",
             "--set", "chunk.max_tokens=96"]  # fmt: skip
     r = CliRunner().invoke(app, ["chunk", str(root), str(tmp_path / "o"), "--workers", "0", *sets])
     assert r.exit_code == 0, r.output
@@ -287,5 +287,53 @@ def test_every_profile_names_a_model():
     from ocrfix.config import available_profiles
 
     for name in available_profiles():
-        assert load_config(name).paths.base_model
-    assert load_config("h200x4", ["paths.base_model=/x"]).llm.model == "/x"
+        assert load_config(name).model
+    from ocrfix.config import correct_model
+
+    assert correct_model(load_config("h200x4", ["model=/x"])) == "/x"
+
+
+def test_current_drops_nearly_empty_docs(tmp_path):
+    """A document noise removal emptied (whole noise chunks) is not written, but listed."""
+
+    def doc(path: str, raw: str, noise: str) -> list[dict]:
+        sha = hashlib.sha256(raw.encode()).hexdigest()
+        rs = chunk_rows(split(raw), path, sha, 40)
+        for i, r in enumerate(rs):
+            if noise == "all" or (noise == "most" and i < len(rs) - 1):
+                r["text"] = " ".join(PLACEHOLDER.findall(r["source_text"]))  # as `score` does
+                r["history"] = [{"stage": "noise_chunk", "bpc": 9.0}]
+        return rs
+
+    docs = {"keep.md": doc("keep.md", SENT * 40, "none"),
+            "gone.md": doc("gone.md", SENT * 40, "all"),
+            "most.md": doc("most.md", SENT * 40, "most"),
+            "table.md": doc("table.md", "Tab. <table><tr><td>1</td></tr></table>\n" * 3,
+                            "all")}  # fmt: skip
+    src = tmp_path / "chunks.jsonl"
+    src.write_text("".join(json.dumps(r) + "\n" for rs in docs.values() for r in rs))
+    out = tmp_path / "out"
+    (out / "gone.md").parent.mkdir(parents=True)
+    (out / "gone.md").write_text("from an earlier run")
+
+    st = run_rebuild(src, out, source="current", min_letters=300, min_kept_share=0.1)
+    assert (
+        # table.md: only tables left (few letters), but a document with a table is always kept
+        st.docs == 2
+        and st.dropped == 2
+        and sorted(p.name for p in out.glob("*.md")) == ["keep.md", "table.md"]
+    )
+    dropped = {d["source_path"]: d for d in map(json.loads, (out / "dropped_docs.jsonl").open())}
+    assert set(dropped) == {"gone.md", "most.md"}
+    g = dropped["gone.md"]
+    assert g["noise_chunks"] == g["chunks"] == len(docs["gone.md"]) and g["letters"] < 300
+    assert g["letters_original"] > 1000 and g["kept_share"] < 0.25  # math and refs stay
+    # the share rule alone; off entirely
+    st = run_rebuild(src, tmp_path / "o2", source="current", min_kept_share=0.5)
+    assert st.dropped == 2
+    st = run_rebuild(src, tmp_path / "o3", source="current")
+    assert (
+        st.dropped == 0 and st.docs == 4 and not (tmp_path / "o3" / "dropped_docs.jsonl").exists()
+    )
+    # original is never filtered
+    assert run_rebuild(src, None, min_letters=300).dropped == 0

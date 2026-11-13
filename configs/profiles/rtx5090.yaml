@@ -1,7 +1,6 @@
 # Single RTX 5090 (32 GB, Blackwell sm_120).
 # FlashAttention 2/3 wheels are not reliable on sm_120 -> use PyTorch SDPA.
-paths:
-  base_model: Qwen3.5-4B   # the 4B copied into the project folder (relative = project root)
+model: Qwen3.5-4B   # the 4B copied into the project folder (relative = project root)
 
 hw:
   name: rtx5090
@@ -19,19 +18,22 @@ hw:
     packing: false                    # packing Qwen3.5 needs fla + causal-conv1d
     distributed: none                 # none | ddp | fsdp (auto: lora -> ddp, full -> fsdp)
 
-  infer:                              # scripts/serve_vllm.sh + `ocrfix correct`
+  infer:                              # vLLM: `ocrfix serve` starts the engines, score/correct use them
+    engines: 1                        # one per GPU (GPU i -> port base_port + i)
     tensor_parallel_size: 1
-    data_parallel_size: 1             # engines, one per GPU, on base_port + i
     gpu_memory_utilization: 0.90
     max_model_len: 4096
     max_num_seqs: 64
-    base_port: 8000
-    urls: ["http://127.0.0.1:8000"]
-    client_concurrency: 64            # requests in flight (all engines together)
+    host: 127.0.0.1                   # the engines listen here: 127.0.0.1 = this machine only;
+                                      # the LAN address to serve other machines
+    base_port: 8100                   # engine i listens on base_port + i (8000 is a web app here)
+    correct_port: 8101                # the tuned engine (`serve --correct`), next to the base
+    concurrency: 64                   # requests in flight per kind (scoring, correction)
+    score_urls: null                  # servers for scoring; null = this machine's engines
+    correct_urls: null                # servers for correction; null = the base engines, or the
+                                      # tuned ones (correct_port) when correct.model is set
 
   scorer:
     # Set for the 9B (bf16 weights ~17 GB, ~6k tokens per forward peak ~20 GB); the 4B needs less.
-    max_seq_len: 4096                 # longer paragraphs are truncated (truncated: true)
     max_batch_tokens: 6144            # tokens per forward (padded rows*width, or packed)
     logits_chunk: 1024                # tokens per lm_head/cross-entropy chunk (fp32 logits)
-    tokenize_workers: 8

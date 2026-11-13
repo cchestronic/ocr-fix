@@ -1,0 +1,18 @@
+# The damage generator: `ocrfix corrupt`. Error rates and types come
+# from `errors table` (error_table.json, confusion_map.json); these settings shape the edits.
+# Used for calibration (damaged vs clean scores) and for synthetic training data.
+
+corrupt:
+  rate_scale: 1.0                     # multiplies every sampled per-chunk rate
+  match_total: true                   # scale the histogram draw to the table's total rate
+  variants: 2                        # damaged copies per chunk (default for --n-variants)
+  line_width: [50, 90]                # chars per simulated line (hyphen_wrap boundaries)
+  hyphen_space_prob: 0.5              # "pro- posed" instead of "pro-\nposed"
+  ligature_glyph_prob: 0.5            # fi -> ﬁ; otherwise the ligature is dropped
+  dup_word_prob: 0.25                 # duplicated_char repeats a word instead of a char
+  garbled_wrap_prob: 0.5              # $...$ wrap when the confusion map has no raw forms
+  page_number_prob: 0.5               # header_footer_insert is a bare page number
+  header_phrases:
+    en: ["Journal of Applied Research", "Proceedings of the Conference", "Vol. 12, No. 3"]
+    ko: ["한국정보과학회 논문지", "제 12 권 제 3 호", "정보처리학회논문지"]
+  junk: ["~", "·", "|", "^", "¬"]

@@ -1,0 +1,11 @@
+# `ocrfix gold chunks` (.md pairs -> chunk gold) and `ocrfix errors table`.
+
+gold:
+  split:                              # by document; the rest is sft. split.json pins documents
+    eval: 0.2                         # measurement only, never trained on
+    dpo: 0.2                          # DPO prompts the SFT model hasn't seen
+  errors:                             # `errors table` (and the error types of `eval`)
+    max_ngram: 3
+    header_footer_min_chars: 8        # dropped runs this long (or page numbers) = header/footer
+    confusion_max_len: 4              # longer substitutions count as "other"
+    top_k: 50                         # char_confusion pairs listed

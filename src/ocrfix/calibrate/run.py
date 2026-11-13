@@ -1,8 +1,8 @@
 """`ocrfix calibrate`: choose tau and per-language flag rules from clean vs corrupted scores.
 
-Inputs are `ocrfix score` outputs, or chunk shards from `ocrfix refine score` (features under
+Inputs are `ocrfix score` outputs, or chunk shards from `ocrfix score` (features under
 ``score``), with ``lang``; corrupted rows also carry ``corruption`` and ``error_rate`` (from
-`ocrfix corrupt` / `ocrfix refine corrupt`):
+`ocrfix corrupt` / `ocrfix corrupt`):
 
   clean_scores       the clean paragraphs
   corrupted_scores   the same paragraphs corrupted, e.g. ``--rate 0.01``, ``0.03``, ``0.1``
@@ -98,7 +98,7 @@ def scores_from_rows(
 
 
 def flat_scores(row: dict[str, Any]) -> dict[str, Any]:
-    """A chunk row from `refine score` keeps its features under ``score``; paragraph score rows
+    """A chunk row from `score` keeps its features under ``score``; paragraph score rows
     have them at the top level. Rows that failed to score (``score: null``) give no features."""
     s = row.get("score")
     return {**row, **s} if isinstance(s, dict) else row
@@ -132,6 +132,7 @@ class Report:
     gold: dict[str, Any] | None = None
     counts: dict[str, dict[str, int]] = field(default_factory=dict)
     recall_labels: list[str] = field(default_factory=list)  # corrupted labels recall is on
+    noise_chunk: dict[str, dict[str, float | None]] = field(default_factory=dict)
 
 
 def calibrate_scores(
@@ -145,6 +146,7 @@ def calibrate_scores(
     min_rows: int = 50,
     max_thresholds: int = 200,
     gold: Scores | None = None,
+    noise_chunk_margin: float | None = None,
 ) -> tuple[Calibration, Report]:
     rep = Report()
     is_clean = data.label == CLEAN
@@ -181,7 +183,7 @@ def calibrate_scores(
         if a is not None and (best is None or a > best[0] + 1e-12):
             best = (a, t)
     if best is None:
-        raise ValueError("no spike_frac column in the scores (score with scorer.tau_candidates)")
+        raise ValueError("no spike_frac column in the scores (score with score.tau_candidates)")
     _, tau = best
     s_col, p_col, b_col = spike_column(tau, base_tau, prefix), prefix + "p90", prefix + "bpc"
 
@@ -203,6 +205,19 @@ def calibrate_scores(
             target_recall=target_recall, max_false_flag=max_false_flag,
             max_thresholds=max_thresholds,
         )  # fmt: skip
+    # whole-chunk noise: above the highest bpc of any real text (clean or damaged) + a margin
+    if noise_chunk_margin is not None:
+        bpc = data.col(b_col)
+        for lang in langs:
+            m = (np.ones(len(data), bool) if lang == ALL else data.lang == lang) & ~np.isnan(bpc)
+            if lang != ALL and m.sum() < min_rows:
+                continue
+            top_clean = float(np.max(bpc[m & is_clean])) if (m & is_clean).any() else None
+            top_bad = float(np.max(bpc[m & ~is_clean])) if (m & ~is_clean).any() else None
+            top = max(x for x in (top_clean, top_bad) if x is not None)
+            cal.noise_chunk[lang] = round(top + noise_chunk_margin, 4)
+            rep.noise_chunk[lang] = {"max_clean": _r(top_clean), "max_damaged": _r(top_bad),
+                                     "threshold": cal.noise_chunk[lang]}  # fmt: skip
     for lang in langs:
         m = np.ones(len(data), bool) if lang == ALL else data.lang == lang
         rule = cal.rule(lang)
@@ -247,8 +262,8 @@ def run_calibrate(
     plots: bool = True,
 ) -> tuple[Calibration, Report]:
     c = cfg.calibrate
-    taus = [float(t) for t in cfg.scorer.tau_candidates]
-    base_tau = float(cfg.scorer.tau)
+    taus = [float(t) for t in cfg.score.tau_candidates]
+    base_tau = float(cfg.score.tau)
     feats = feature_names(taus, base_tau)
 
     def rows(p: Path) -> list[dict[str, Any]]:
@@ -277,6 +292,7 @@ def run_calibrate(
         min_rows=int(c.min_rows),
         max_thresholds=int(c.max_thresholds),
         gold=gold,
+        noise_chunk_margin=float(c.noise_chunk.margin),
     )
     write_outputs(cal, rep, data, out_dir, base_tau=base_tau, plots=plots)
     return cal, rep

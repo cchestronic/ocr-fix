@@ -230,8 +230,32 @@ def test_calibrate_cli(tmp_path):
     res = CliRunner().invoke(
         app,
         ["calibrate", str(clean), str(bad), str(out), "--no-plots",
-         "--set", "scorer.tau_candidates=[8,10,12]", "--set", "calibrate.target_recall=0.8"],
+         "--set", "score.tau_candidates=[8,10,12]", "--set", "calibrate.target_recall=0.8"],
     )  # fmt: skip
     assert res.exit_code == 0, res.output
     assert "tau=12" in res.output
     assert load_calibration(out / "calibration.yaml").tau == 12.0
+
+
+def test_noise_chunk_threshold_above_all_real_text(tmp_path):
+    from ocrfix.calibrate import load_calibration, save_calibration
+
+    data = synthetic(small_lang="ko")
+    cal, rep = run(data, noise_chunk_margin=1.0, min_rows=100)
+    bpc = data.col("bpc")
+    en = data.lang == "en"
+    # en has its own threshold: its highest clean or damaged bpc + 1; ko (80 rows) uses "*"
+    assert cal.noise_chunk["en"] == pytest.approx(float(np.nanmax(bpc[en])) + 1.0, abs=1e-4)
+    assert "ko" not in cal.noise_chunk
+    assert cal.noise_chunk["*"] == pytest.approx(float(np.nanmax(bpc)) + 1.0, abs=1e-4)
+    assert rep.noise_chunk["en"]["threshold"] == cal.noise_chunk["en"]
+    # no real chunk of the data is above its threshold
+    for lang in ("en", "ko"):
+        m = data.lang == lang
+        assert not any(cal.is_noise_chunk({"bpc": b}, lang) for b in bpc[m])
+    assert cal.is_noise_chunk({"bpc": 50.0}, "zh")  # "*" for any other language
+    assert not cal.is_noise_chunk({"bpc": 50.0, "low_confidence": True}, "en")
+    # saved and loaded; an older file without it never drops a chunk
+    save_calibration(cal, tmp_path / "c.yaml")
+    assert load_calibration(tmp_path / "c.yaml").noise_chunk == cal.noise_chunk
+    assert run(data)[0].noise_chunk == {}

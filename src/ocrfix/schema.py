@@ -1,13 +1,12 @@
-"""Shared record schema for every JSONL file passed between stages.
+"""Shared types and constants: text spans, placeholder formats, NFC.
 
-Span offsets are Python ``str`` indices (code points) into the NFC-normalized ``text``.
-Stage-specific fields ride along in ``extra`` and are flattened into the JSON object.
+Span offsets are Python ``str`` indices (code points) into the NFC-normalized text.
 """
 
 from __future__ import annotations
 
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
 SpanKind = Literal["prose", "math", "table"]
@@ -18,8 +17,6 @@ MATH_PH = "⟨M{}⟩"
 TABLE_PH = "⟨T{}⟩"
 PROTECTED_PH = "⟨P{}⟩"
 UNCERTAIN = "〈?〉"
-
-CORE_FIELDS = ("doc_id", "para_id", "order", "lang", "text", "spans", "source_path")
 
 
 def nfc(s: str) -> str:
@@ -44,63 +41,3 @@ class Span:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Span:
         return cls(start=int(d["start"]), end=int(d["end"]), kind=d["kind"])
-
-
-@dataclass
-class Record:
-    doc_id: str
-    para_id: str
-    order: int
-    lang: str
-    text: str
-    spans: list[Span] = field(default_factory=list)
-    source_path: str = ""
-    extra: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if self.text != nfc(self.text):
-            raise ValueError(f"{self.key}: text is not NFC (normalize before computing spans)")
-        for s in self.spans:
-            if s.end > len(self.text):
-                raise ValueError(f"{self.key}: span {s} exceeds text length {len(self.text)}")
-
-    @property
-    def key(self) -> tuple[str, str]:
-        return (self.doc_id, self.para_id)
-
-    def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
-            "doc_id": self.doc_id,
-            "para_id": self.para_id,
-            "order": self.order,
-            "lang": self.lang,
-            "text": self.text,
-            "spans": [s.to_dict() for s in self.spans],
-            "source_path": self.source_path,
-        }
-        clash = d.keys() & self.extra.keys()
-        if clash:
-            raise ValueError(f"extra fields shadow core fields: {sorted(clash)}")
-        d.update(self.extra)
-        return d
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> Record:
-        """Parse a JSON object. NFC-normalizes text; refuses if that would shift spans."""
-        raw = d["text"]
-        text = nfc(raw)
-        spans = [Span.from_dict(s) for s in d.get("spans", [])]
-        if text != raw and spans:
-            raise ValueError(
-                f"{d['doc_id']}/{d['para_id']}: non-NFC text with spans; offsets would be invalid"
-            )
-        return cls(
-            doc_id=str(d["doc_id"]),
-            para_id=str(d["para_id"]),
-            order=int(d["order"]),
-            lang=d["lang"],
-            text=text,
-            spans=spans,
-            source_path=d.get("source_path", ""),
-            extra={k: v for k, v in d.items() if k not in CORE_FIELDS},
-        )

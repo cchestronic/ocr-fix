@@ -73,7 +73,7 @@ def check_edit(src: str, dst: str, cap: float) -> Check:
 def _ko_share(text: str, spans: list[Span], hangul_weight: float) -> float:
     prose = "".join(text[s.start : s.end] for s in spans if s.kind == "prose")
     c = script_counts(prose, hangul_weight)
-    total = sum(c.values())
+    total = sum(c.values()) - c["cjk"]  # as detect_lang: Hanja doesn't count
     return c["ko"] / total if total else 0.0
 
 

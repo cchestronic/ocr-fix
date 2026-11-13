@@ -72,8 +72,8 @@ def train_sft(
     from trl import SFTConfig, SFTTrainer
 
     st = resolve(cfg)
-    tok = load_tokenizer(cfg.paths.tokenizer)
-    tk = {"enable_thinking": bool(cfg.llm.enable_thinking)}
+    tok = load_tokenizer(cfg.model)
+    tk = {"enable_thinking": bool(cfg.correct.enable_thinking)}
     rows, dropped = rendered_rows(data, tok, tk, st.max_len, limit)
     if eval_data is not None:
         ev, _ = rendered_rows(eval_data, tok, tk, st.max_len, None)
@@ -94,7 +94,7 @@ def train_sft(
         settings_dict(st),
     )
 
-    model = load_base(cfg.paths.base_model, st)
+    model = load_base(cfg.model, st)
     peft_cfg = None if st.mode == "full" else lora_config(cfg, model)
     t = cfg.train
     args = SFTConfig(
@@ -137,7 +137,7 @@ def train_sft(
     if is_main():
         tok.save_pretrained(str(out_dir))
         write_meta(out_dir, {
-            "stage": "sft", "mode": st.mode, "base_model": str(cfg.paths.base_model),
+            "stage": "sft", "mode": st.mode, "base_model": str(cfg.model),
             "quantized_base": st.mode == "qlora", "profile": str(cfg.hw.name),
             "settings": settings_dict(st),
             "rows": {"train": len(train), "eval": len(ev), "dropped": dropped},

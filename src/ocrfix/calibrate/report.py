@@ -79,6 +79,18 @@ def summary_md(cal: Calibration, rep: Report, pngs: list[Path]) -> str:
             ["lang", *keys], [[lg, *(g[k] for k in keys)] for lg, g in rep.gold.items()]
         )
 
+    if rep.noise_chunk:
+        lines += ["## Whole-chunk noise (score.noise.whole_chunks)", "",
+                  "A chunk with bpc above the threshold is dropped as noise: the highest bpc of "
+                  "any clean or damaged chunk of that language, plus calibrate.noise_chunk.margin. "
+                  "A first value from synthetic data: "
+                  "`ocrfix calibrate-noise-chunk` sets it from the gold (run it after this).",
+                  ""]  # fmt: skip
+        keys = ["max_clean", "max_damaged", "threshold"]
+        lines += _md_table(
+            ["lang", *keys], [[lg, *(v[k] for k in keys)] for lg, v in rep.noise_chunk.items()]
+        )
+
     feats = list(rep.auroc[ALL])
     lines += ["## AUROC clean vs corrupted", ""]
     lines += _md_table(

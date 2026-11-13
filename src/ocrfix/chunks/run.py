@@ -40,7 +40,7 @@ from typing import Any
 from omegaconf import OmegaConf
 
 from ocrfix.chunks.split import Chunk, split_document
-from ocrfix.corpus.ingest import doc_id_for, find_markdown, in_sample
+from ocrfix.corpus.files import doc_id_for, find_markdown, in_sample
 from ocrfix.io import open_text
 
 _ENCODER = None
@@ -198,17 +198,19 @@ def run_chunk(
         raise ValueError(
             f"chunk: need 0 < min_tokens <= max_tokens, got {min_tokens}, {max_tokens}"
         )
-    tokenizer = str(cfg.paths.tokenizer)
+    tokenizer = str(cfg.model)
     tok_file = Path(tokenizer) / "tokenizer.json"
     settings = {
         "min_tokens": min_tokens,
         "max_tokens": max_tokens,
-        "protect": list(cfg.llm.protect),
-        "lang": OmegaConf.to_container(cfg.corpus.lang, resolve=True),
+        "protect": list(cfg.chunk.protect),
+        "lang": OmegaConf.to_container(cfg.lang, resolve=True),
         "tokenizer_sha256": _file_hash(tok_file) if tok_file.is_file() else tokenizer,
     }
+    if sample_frac is None and cfg.chunk.sample_frac is not None:
+        sample_frac = float(cfg.chunk.sample_frac)
     files = []
-    for p in find_markdown(input_dir, cfg.corpus.input_glob):
+    for p in find_markdown(input_dir, cfg.chunk.glob):
         rel = p.relative_to(input_dir).as_posix()
         if sample_frac is None or in_sample(rel, sample_frac, int(cfg.seed)):
             files.append((rel, p.stat().st_size))
@@ -233,7 +235,7 @@ def run_chunk(
     else:
         mpath.write_text(json.dumps(manifest, ensure_ascii=False) + "\n", "utf-8")
 
-    suffix = ".jsonl.gz" if bool(cfg.io.gzip) else ".jsonl"
+    suffix = ".jsonl.gz" if bool(cfg.chunk.gzip) else ".jsonl"
     stats = ChunkStats(parts=len(parts))
     jobs = []
     for i, part in enumerate(parts):

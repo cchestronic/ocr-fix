@@ -1,0 +1,66 @@
+# Example: several machines. Copy to configs/profiles/cluster.yaml, change the addresses, and
+# run the `ocrfix` commands with --profile cluster. (A *.yaml.example file is not a profile.)
+#
+#   gpu1  10.0.0.11  4x H200   base model (Qwen3.5-9B)         scoring      ports 8000-8003
+#   gpu2  10.0.0.12  4x H200   tuned model (`train merge`)     correction   ports 8000-8003
+#   gpu3  10.0.0.13  4x H200   tuned model                     correction   ports 8000-8003
+#   ocrfix commands run on gpu1 (any machine that reaches the three works).
+#
+# Start the engines on each machine with its own profile, listening on its LAN address
+# (127.0.0.1 would refuse the other machines):
+#
+#   gpu1$ ocrfix serve --profile h200x4 --set hw.infer.host=10.0.0.11
+#   gpu2$ ocrfix serve --correct --profile h200x4 --set hw.infer.host=10.0.0.12 \
+#           --set correct.model=/models/ocrfix-sft-merged
+#   gpu3$ (as gpu2, with hw.infer.host=10.0.0.13)
+#
+# The engines have no password: listen only on the internal network (the LAN address).
+# Check from gpu1: curl http://10.0.0.12:8000/health
+#
+# Then, on gpu1 (correct.model must name the same tuned model, so requests ask for it):
+#   ocrfix score   data/chunks data/scored  --profile cluster
+#   ocrfix correct data/scored data/refined --profile cluster --set correct.model=/models/ocrfix-sft-merged
+#   ocrfix config --profile cluster --key hw.infer.correct_urls        # check
+
+model: /models/Qwen3.5-9B             # on gpu1, where ocrfix runs
+
+hw:                                   # gpu1's hardware (as h200x4)
+  name: cluster
+  n_gpus: 4
+  dtype: bfloat16
+  attn_impl: flash_attention_2
+  vllm_attention_backend: FLASH_ATTN
+
+  train:
+    mode: lora
+    per_device_batch_size: 8
+    max_seq_len: 8192
+    gradient_checkpointing: true
+    optim: adamw_torch_fused
+    packing: true
+    distributed: auto
+    fsdp:
+      sharding: full_shard auto_wrap
+      layer_cls: Qwen3_5DecoderLayer
+
+  infer:
+    engines: 4                        # gpu1's own engines
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.92
+    max_model_len: 8192
+    max_num_seqs: 256
+    host: 10.0.0.11                   # gpu1's LAN address
+    base_port: 8000
+    correct_port: 8100                # unused here: correct_urls lists the tuned engines
+    concurrency: 1024                 # about max_num_seqs x engines of a kind
+    # requests go round-robin over each list, each retried on the next URL if one fails
+    score_urls: ["http://10.0.0.11:8000", "http://10.0.0.11:8001",
+                 "http://10.0.0.11:8002", "http://10.0.0.11:8003"]
+    correct_urls: ["http://10.0.0.12:8000", "http://10.0.0.12:8001",
+                   "http://10.0.0.12:8002", "http://10.0.0.12:8003",
+                   "http://10.0.0.13:8000", "http://10.0.0.13:8001",
+                   "http://10.0.0.13:8002", "http://10.0.0.13:8003"]
+
+  scorer:
+    max_batch_tokens: 32768
+    logits_chunk: 4096

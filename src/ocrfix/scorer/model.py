@@ -207,3 +207,16 @@ def score_sequences(
         for (i, _, _), bits in zip(batch.rows, batch_bits(model, batch, logits_chunk), strict=True):
             out[i] = bits
     return out  # type: ignore[return-value]
+
+
+def load_scorer(cfg, device):
+    """(model, mode, start-token id) for the base model (``model``) on ``device``."""
+    from transformers import AutoConfig
+
+    model_cfg = AutoConfig.from_pretrained(cfg.model, local_files_only=True)
+    mode, attn, why = choose_mode(cfg.hw.attn_impl, model_cfg)
+    log.info("scorer mode=%s attn=%s (%s)", mode, attn, why)
+    model = load_model(cfg.model, cfg.hw.dtype, attn, device)
+    eos_id = model.config.eos_token_id
+    eos_id = eos_id[0] if isinstance(eos_id, list) else eos_id
+    return model, mode, eos_id

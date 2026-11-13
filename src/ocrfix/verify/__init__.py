@@ -1,6 +1,6 @@
-"""Guardrails on LLM corrections: ``ocrfix verify`` and ``ocrfix verify-summary``."""
+"""The checks every correction must pass (`correct`): placeholders, length, edit size,
+language, 〈?〉 gap fill, and the re-score."""
 
 from ocrfix.verify.checks import CHECKS, Check
-from ocrfix.verify.run import format_summary, run_verify, summarize, verify
 
-__all__ = ["CHECKS", "Check", "format_summary", "run_verify", "summarize", "verify"]
+__all__ = ["CHECKS", "Check"]

@@ -1,0 +1,8 @@
+# `ocrfix reconstruct --source current`: chunks -> corrected .md files. A document that noise
+# removal emptied is not written; it is listed in <out_dir>/dropped_docs.jsonl instead.
+# A document with a table is never dropped.
+
+reconstruct:
+  # letters and digits (any script; math and tables count) left in the corrected document
+  min_letters: 300                    # fewer: dropped (0 = off)
+  min_kept_share: 0.1                 # kept letters / letters in the original below this: dropped (0 = off)

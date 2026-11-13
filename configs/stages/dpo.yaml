@@ -1,0 +1,30 @@
+# DPO: the pairs (`ocrfix data dpo`) and the training run (`ocrfix train dpo`). Batch, LoRA
+# and logging come from `train:` (sft.yaml); the model that answers the prompts is
+# correct.model / correct.adapter (correct.yaml).
+
+dpo:                                  # `ocrfix data dpo` (stages/dpo.py); prompts as `data sft`
+  n_samples: 4                        # sampled answers per prompt, besides the greedy one
+  temperature: 0.8
+  top_p: 0.95
+  max_pairs: 2                        # rejected answers per prompt (greedy first, then near misses)
+  constructed: [unchanged, half_fixed, placeholder_dropped, guessed, overcautious]
+                                      # off-policy kinds, in turn (a prompt with a lost word
+                                      # tries guessed first)
+  constructed_share: 0.25             # of prompts the model always got right: one constructed pair
+  max_prompts: {synthetic: null, gold: null, identity: null}   # per source; null = all
+
+train:
+  dpo:
+    epochs: 1
+    lr: 5.0e-6
+    beta: 0.1
+    loss_type: sigmoid
+    # The mode (qlora | lora | full) is hw.train.mode, as for SFT. The SFT result passed to
+    # `train dpo` may be a LoRA adapter or a full model dir (full mode needs a full one).
+    # reference, LoRA modes (no second weight copy):
+    #   sft:  a frozen copy of the SFT adapter (the usual DPO reference)
+    #   base: the adapter disabled = the base model (the full SFT model if that's the base)
+    # reference, full mode:
+    #   sft:  the starting policy (the SFT model); base: the base model as a frozen copy
+    reference: sft
+    precompute_ref: true              # full mode: reference log-probs once, before training

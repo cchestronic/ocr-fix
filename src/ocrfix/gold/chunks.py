@@ -22,10 +22,10 @@ differs from the OCR ``suffix`` (``suffix_changed`` in the stats: mostly a line 
 sentence that the chunker cut at), the difference sits between chunks, where no correction
 reaches it.
 
-Split by document (``gold.chunks.split``: eval / dpo shares, the rest sft); ``split.json``
+Split by document (``gold.split``: eval / dpo shares, the rest sft); ``split.json``
 pins every document to its side, so adding gold later never moves a document. Output:
 ``<out_dir>/{sft,dpo,eval}/part-00000.jsonl``: every chunk of every document of that side
-(complete documents, so `refine score|correct` and `reconstruct` work on them), each chunk
+(complete documents, so `score` / `correct` and `reconstruct` work on them), each chunk
 row plus ``gold_text``, ``gold_placeholders``, ``gold_status``, ``split``. ``stats.json``
 counts documents, chunks per status, edited chunks and 〈?〉.
 """
@@ -180,12 +180,12 @@ def build_gold_chunks(
     for d in (ocr_dir, truth_dir):
         if not d.is_dir():
             raise ValueError(f"{d}: missing (gold needs ocr/ and truth/ side by side)")
-    opts = cfg.gold.chunks
+    opts = cfg.gold
     shares = {"eval": float(opts.split.eval), "dpo": float(opts.split.dpo)}
     if sum(shares.values()) >= 1:
-        raise ValueError("gold.chunks.split: eval + dpo must be < 1 (the rest is sft)")
-    seed = int(opts.split.seed)
-    protect = list(cfg.llm.protect)
+        raise ValueError("gold.split: eval + dpo must be < 1 (the rest is sft)")
+    seed = int(cfg.seed)
+    protect = list(cfg.chunk.protect)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     chunk_dir = out_dir / "chunks"

@@ -1,0 +1,47 @@
+# SFT: the training data (`ocrfix data sft`) and the training run (`ocrfix train sft`, `train
+# merge`). `train:` holds the settings SFT and DPO share (DPO's own are train.dpo, in dpo.yaml).
+# Micro-batch, sequence length, QLoRA/LoRA/full and the optimizer are the machine's: hw.train.
+
+sft:                                  # `ocrfix data sft` (stages/data.py)
+  mix: {synthetic: 0.6, gold: 0.2, identity: 0.2}   # renormalized over the sources given;
+                                      # identity: clean chunks returned unchanged
+  gold_repeats: 2                     # each gold chunk this many times
+  lang_balance: null                  # e.g. {ko: 0.5, en: 0.35, mixed: 0.15}; null = as found
+  total: null                         # null = as many as the mix allows without reuse
+  val_frac: 0.02                      # validation share, by document
+  # put "<think>\n\n</think>\n\n" before each answer. Not needed for Qwen3.5: with thinking
+  # off its chat template adds that block itself. `train` checks either way.
+  empty_think: false
+  junk:                               # short junk added to synthetic inputs, dropped in the target
+    prob: 0.3                         # share of synthetic chunks that get junk
+    max_runs: 3                       # 1..max_runs per chunk
+    chars: [3, 30]                    # non-space chars per run (noise removal takes >= 20 only)
+    own_line: 0.2                     # share of runs inserted as their own paragraph
+  lost:                               # words destroyed beyond recovery: garbage in, 〈?〉 out
+    prob: 0                           # share of synthetic chunks that get lost words; 0 = off
+                                      # (the model then guesses destroyed words; 0.1 teaches 〈?〉)
+    max_runs: 2                       # 1..max_runs lost stretches per chunk
+    two_words: 0.2                    # share of stretches that cover two adjacent words
+
+train:                                # `ocrfix train sft|dpo|merge`
+  effective_batch: 32                 # sequences per optimizer step; grad accumulation derived
+  lr: 1.0e-4
+  warmup_ratio: 0.03
+  scheduler: cosine
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  group_by_length: true               # unpacked runs: batch similar lengths (less padding)
+  eval_frac: 0.02                     # held-out slice of the training file when no --eval file
+  max_eval: 500                       # cap on held-out examples
+  eval_steps: 200
+  save_steps: 500
+  logging_steps: 10
+  lora:
+    r: 32
+    alpha: 64
+    dropout: 0.05
+    # attention + MLP; Qwen3.5's Gated DeltaNet layers: in_proj_qkv/z/a/b, out_proj
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj,
+                     in_proj_qkv, in_proj_z, out_proj]
+  sft:
+    epochs: 2

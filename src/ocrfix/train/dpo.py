@@ -17,7 +17,7 @@ Reference (``train.dpo.reference``):
   once before training, so no reference copy stays in memory (under FSDP TRL loads one for
   that pass and frees it):
     sft   the starting policy (the SFT model)
-    base  ``paths.base_model``, loaded as a separate frozen model
+    base  the base model (``model``), loaded as a separate frozen model
 
 Rows are ``ocrfix data dpo`` output, rendered like SFT: prompt = served generation prompt,
 chosen / rejected = the assistant turn ending with the template's end-of-turn token, which
@@ -87,7 +87,7 @@ def build_policy(cfg, st, sft: Path):
 
     if kind == "adapter":
         meta = read_meta(sft)
-        base_dir = str(meta.get("base_model") or cfg.paths.base_model)
+        base_dir = str(meta.get("base_model") or cfg.model)
         if meta.get("quantized_base") is not None and meta["quantized_base"] != (
             st.mode == "qlora"
         ):
@@ -118,8 +118,8 @@ def train_dpo(
     reference = str(d.reference)
     if reference not in REFERENCES:
         raise ValueError(f"train.dpo.reference must be one of {REFERENCES}, got {reference!r}")
-    tok = load_tokenizer(cfg.paths.tokenizer)
-    tk = {"enable_thinking": bool(cfg.llm.enable_thinking)}
+    tok = load_tokenizer(cfg.model)
+    tk = {"enable_thinking": bool(cfg.correct.enable_thinking)}
     rows, dropped = rendered_pairs(data, tok, tk, st.max_len, limit)
     frac = float(cfg.train.eval_frac)
     ev = [r for r in rows if held_out(r["id"], frac)][: int(cfg.train.max_eval)]
@@ -135,7 +135,7 @@ def train_dpo(
     full = st.mode == "full"
     ref_model = None
     if full and reference == "base":
-        ref_model = load_base(str(cfg.paths.base_model), st)
+        ref_model = load_base(str(cfg.model), st)
         ref_model.requires_grad_(False)
 
     # TRL appends tok.eos_token to chosen/rejected unless they end with it; make the
