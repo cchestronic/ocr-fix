@@ -1,0 +1,22 @@
+# Top-level deps. Regenerate the lock on an ONLINE machine:
+#   uv pip compile requirements.in -o requirements.lock --python-version 3.12 \
+#       --python-platform x86_64-manylinux_2_28 --generate-hashes
+typer
+omegaconf
+rapidfuzz
+jamo
+matplotlib
+httpx
+regex
+torch
+transformers
+accelerate
+peft
+trl>=1.0
+datasets
+bitsandbytes
+vllm
+pytest
+ruff
+hatchling
+# Optional Qwen3.5 training kernels are NOT here: see requirements-kernels.in.

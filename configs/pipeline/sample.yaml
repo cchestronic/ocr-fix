@@ -1,0 +1,14 @@
+# ~2% document sample of the corpus: the first end-to-end run on the RTX 5090.
+#   ocrfix pipeline configs/pipeline/sample.yaml --profile rtx5090
+# Before a calibration exists, correct/verify/eval are skipped with a note; after
+# `ocrfix calibrate` (and `gold import` for eval), rerun the same command and only the
+# missing stages run.
+input_dir: /data/mineru               # MinerU markdown (corpus.input_glob)
+work_dir: runs/pipeline/sample
+sample_frac: 0.02                     # share of documents (by path hash); for a 50 GB corpus start at 0.003
+gold_eval: data/gold/gold_eval.jsonl  # null to skip eval
+correct_all: false                    # true: correct every paragraph, not only flagged ones
+serve: auto                           # auto | external | echo (see `ocrfix pipeline --help`)
+serve_timeout: 1800                   # seconds to wait for vLLM to come up
+stages: [ingest, score, fix, rescore, correct, verify, eval]
+set: []                               # extra config overrides (key=value) for every stage

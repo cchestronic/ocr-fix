@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ocrfix"
+version = "0.1.0"
+description = "Correct OCR errors in MinerU markdown (en/ko, LaTeX, HTML tables) with a local Qwen3.5-9B."
+readme = "CLAUDE.md"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "omegaconf>=2.3",
+]
+
+[project.optional-dependencies]
+# GPU stack: scorer/llm/train/eval. Exact versions live in requirements.lock.
+gpu = [
+    "torch",
+    "transformers",
+    "accelerate",
+    "peft",
+    "trl",
+    "datasets",
+    "bitsandbytes",
+    "vllm",
+    "httpx",
+]
+# Optional Qwen3.5 training kernels (see requirements-kernels.in). causal-conv1d has no
+# PyPI wheel: scripts/build_causal_conv1d.sh builds it.
+kernels = [
+    "flash-linear-attention",
+]
+text = [
+    "rapidfuzz",
+    "jamo",
+    "matplotlib",
+    "regex",
+]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+ocrfix = "ocrfix.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ocrfix"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+# Not a git repository, so .gitignore isn't applied: keep data, models and builds out.
+extend-exclude = ["data", "runs", "wheelhouse", "Qwen3.5-*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+# ⟨ ⟩ 〈 〉 and Hangul are intentional throughout this codebase.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# word lists are clearer as one string
+"tests/test_corrupt.py" = ["SIM905"]
+# fixture rows are clearer one record per line
+"tests/test_data.py" = ["E501"]
+# typer.Option(...) in defaults is the typer idiom.
+"src/ocrfix/cli.py" = ["B008"]

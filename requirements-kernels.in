@@ -1,0 +1,8 @@
+# OPTIONAL fast kernels for Qwen3.5's linear-attention layers (training speed/memory, packing).
+# Without them transformers uses its pure-PyTorch path: correct, slower. vLLM doesn't need them.
+# Locked against the main lock so nothing in it moves. Regenerate on an ONLINE machine:
+#   uv pip compile requirements-kernels.in -c requirements.lock -o requirements-kernels.lock \
+#       --python-version 3.12 --python-platform x86_64-manylinux_2_28 --generate-hashes
+flash-linear-attention
+# causal-conv1d is also part of this set, but PyPI has only an sdist:
+# scripts/build_causal_conv1d.sh compiles it against the locked torch into the wheelhouse.
