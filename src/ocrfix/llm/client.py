@@ -55,6 +55,10 @@ class Client:
         timeout: float = 600.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        if not urls and transport is not None:
+            # an in-process transport (correct.backend: transformers) answers every request:
+            # no server is contacted, so a machine without engines (hw.infer.engines: 0) works
+            urls = ["http://in-process"]
         if not urls:
             raise ValueError("no server URLs (hw.infer.score_urls / correct_urls)")
         self.urls = [u.rstrip("/") for u in urls]

@@ -101,3 +101,13 @@ def test_all_retries_fail(tmp_path):
     assert (
         stats["failed"] == 1 and got["x"]["attempts"] == 3 and "ConnectError" in got["x"]["error"]
     )
+
+
+def test_in_process_transport_needs_no_urls():
+    """correct.backend: transformers on a machine without engines (the cpu profile)."""
+    import pytest
+
+    t = httpx.MockTransport(lambda r: httpx.Response(200, json={}))
+    assert Client([], transport=t).urls == ["http://in-process"]
+    with pytest.raises(ValueError, match="no server URLs"):
+        Client([])
