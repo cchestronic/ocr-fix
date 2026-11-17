@@ -6,7 +6,6 @@ each region one type; checks run in the order of ``TYPES``:
 
   header_footer_insert  OCR text the gold drops: >= 8 non-space chars or a bare page
                         number, on word boundaries (running headers, page numbers)
-  unrecoverable         gold has 〈?〉 here
   hyphen_wrap           "pro- posed", "out-\\nperforms" -> joined; "well- known" -> "well-known"
   newline_in_sentence   a line break the gold replaces by a space or nothing
   missing_space         gold adds whitespace
@@ -29,8 +28,6 @@ import re
 import unicodedata
 from dataclasses import asdict, dataclass
 
-from ocrfix.schema import UNCERTAIN
-
 try:
     from rapidfuzz.distance import Levenshtein as _lev
 except ImportError:  # the `text` extra is optional
@@ -38,7 +35,6 @@ except ImportError:  # the `text` extra is optional
 
 TYPES = (
     "header_footer_insert",
-    "unrecoverable",
     "hyphen_wrap",
     "newline_in_sentence",
     "missing_space",
@@ -198,8 +194,6 @@ def classify(
         )
     ):
         return op("header_footer_insert")
-    if UNCERTAIN in g:
-        return op("unrecoverable")
 
     left = src[i1 - 1] if i1 > 0 else ""
     right = src[i2] if i2 < len(src) else ""

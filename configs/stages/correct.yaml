@@ -23,7 +23,6 @@ correct:
     length_ratio: [0.8, 1.25]         # len(corrected) / len(source)
     max_edit_ratio: 0.15              # char edit distance / len(source)
     max_script_shift: 0.1             # max change of the Hangul share of prose letters
-    gap_fill_max_syllables: 4         # a 〈?〉 of the source may be filled with 1..N syllables
     # re-score: the corrected text is scored again with the base model
     min_bpc_gain: 0.0                 # bpc(source) - bpc(corrected) must be >= this
     spike_ratio: 1.0                  # spike_frac(corrected) <= spike_ratio * spike_frac(source)

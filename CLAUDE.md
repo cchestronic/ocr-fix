@@ -46,7 +46,7 @@ src/ocrfix/editdist.py         Levenshtein (rapidfuzz if installed)
 scripts/                       make_wheelhouse.py, install_offline.py, build_causal_conv1d.py, make_test_corpus.py
 src/ocrfix/serve.py            `ocrfix serve`: the vLLM engines
 tests/fixtures/                sample_mineru/ (tiny tokenizer), records.jsonl
-docs/annotation_guideline.md   gold .md pairs: what to fix, 〈?〉, checks, examples
+docs/annotation_guideline.md   gold .md pairs: what to fix, checks, examples
 docs/real_data.md              real data step by step: gold chunks -> calibration -> SFT/DPO -> eval -> corpus
 docs/runbook.md                install, model copy, the H200 track, adding a profile
 ```
@@ -150,7 +150,7 @@ shards; `--limit` counts shards). Details in the `stages/run.py` docstring.
   whole masked chunk (no markers; `max_tokens` = 1.3 × n_tokens + 16; greedy, thinking off) to
   `hw.infer.correct_urls` → `parse_answer` (drops `<think>`, strips) → `text_checks`
   (`placeholders` via `restore`, then on restored text `markers` and `language`, on masked text
-  `length_ratio`, `edit_ratio`, `gap_fill`) → re-score → `check_scorer` → `accepted` (text and
+  `length_ratio`, `edit_ratio`) → re-score → `check_scorer` → `accepted` (text and
   score replaced) / `rejected` / `unchanged` / `error`. Each attempt is appended to `history`
   (`model, candidate, checks, score_before, score_after, accepted` or `error`).
 - **`ocrfix summary <dir>`:** status counts, accept rate, failed checks, per language,
@@ -202,13 +202,8 @@ shards; `--limit` counts shards). Details in the `stages/run.py` docstring.
   was measured too: no better for noise, worse for flagging (ko recall at r0.01 0.68 -> 0.45).
   Score calibration inputs with `score.noise.remove=false`. A random model (the tiny test
   model) finds everything noisy, so tests using it turn removal off.
-- **Test data lost words:** `make_test_corpus.py --lost-words P` replaces a share P of prose
-  words in `ocr/` by garbage from other alphabets than `garble()` (loose jamo, `▢▣◘`, mixed
-  capitals/digits) and by `〈?〉` in `truth/` (as a hand truth file has it); the log keeps
-  `lost: [{start, end, word, garbage}]` (offsets before the replacement). `data/test_lost`
-  (48 docs, 776 lost words; `gold/` links its ocr/ and truth/) is such a set.
 - **`ocrfix gold chunks <gold_dir> <out_dir>`** (`gold/chunks.py`): real gold is `.md` pairs,
-  `gold/ocr/**.md` (MinerU, unedited) + `gold/truth/**.md` (corrected, `〈?〉` for lost words;
+  `gold/ocr/**.md` (MinerU, unedited) + `gold/truth/**.md` (corrected;
   guideline `docs/annotation_guideline.md`). Only ocr/ is chunked (`run_chunk` into
   `<out>/chunks`, rebuilt each run); `TruthMap` (Levenshtein opcodes, adjacent non-equal ops
   merged) maps each cut to the truth: insertions at a chunk's start/end go to that chunk, a
@@ -217,23 +212,20 @@ shards; `--limit` counts shards). Details in the `stages/run.py` docstring.
   masked from a whole-document tagging (`render`); placeholders must equal the OCR chunk's
   (`placeholders_changed`), no text -> `empty`. `gold_suffix` = the truth's whitespace after the
   chunk; `suffix_changed` counts cuts at a line break the truth joined (unfixable by a chunk
-  corrector; 5 of 845 cuts on test_lost). Split by doc hash (`gold.split` eval 0.2 /
+  corrector). Split by doc hash (`gold.split` eval 0.2 /
   dpo 0.2 / rest sft), pinned by `split.json` (`{eval,dpo,sft}_docs`; `the gold eval split`
   reads `eval_docs`). Writes `{sft,dpo,eval}/part-00000.jsonl` (complete documents: chunk rows
-  + `gold_text, gold_placeholders, gold_status, gold_suffix, split`) and `stats.json`. On
-  test_lost: 844/845 ok (one URL glued by a missing space). `errors table` reads the sft dir
+  + `gold_text, gold_placeholders, gold_status, gold_suffix, split`) and `stats.json`. `errors table` reads the sft dir
   (only `gold_status: ok`).
 - **Gold in `data sft` / `data dpo`:** `--gold` = `gold chunks` rows, input `source_text`,
-  target `gold_text`, only `ok` rows, never `split: eval`; no junk or lost words added;
+  target `gold_text`, only `ok` rows, never `split: eval`; no junk added;
   `sft.gold_repeats` (2) copies with ids `<id>#k` (SFT only; DPO uses 1). Default mix
   synthetic 0.6 / gold 0.2 / identity 0.2, renormalized over the sources given.
 - **`ocrfix eval <truth_dir> <name=dir>... <out_dir>`** (`stages/eval.py`): documents
   complete in every system dir and with a truth file, rebuilt (`current`; the first system's
   `original` is system `ocr`), normalized like the chunker, compared whole: CER, WER, SER,
   false-fix rate (ocr->output regions touching no ocr->truth region), recall per
-  `diff_ops` type (no output->truth residual region touches it), per truth-added `〈?〉`:
-  marked / left (output ~ the OCR text there) / invented, `false_uncertain` (output `〈?〉`
-  outside equal alignment); overall and per doc language (most chunk chars); paired Wilcoxon on
+  `diff_ops` type (no output->truth residual region touches it); overall and per doc language (most chunk chars); paired Wilcoxon on
   per-doc CER, Holm. `metrics.json`, `per_doc.jsonl`, `report.md`. The step-by-step real-data
   workflow is `docs/real_data.md`.
 - **Test data noise:** `make_test_corpus.py --noise-docs 0.3` inserts noise runs after sentence
@@ -256,10 +248,7 @@ shards; `--limit` counts shards). Details in the `stages/run.py` docstring.
   `lI1`-like Latin, random Hangul; never `$ | \` < > [ ]` or placeholder brackets) after a
   sentence end or as their own paragraph; the target leaves them out (`junk` lists them).
   The alphabets overlap `make_test_corpus.py`'s noise, so junk removal on the test set is
-  optimistic. A share (`sft.lost.prob` 0.1) gets 1..2 lost words
-  (`add_lost`): a word the input holds intact and the chunk holds once (2-8 syllables / 4+
-  letters) becomes garbage drawn without its letters (random syllables or letters, boxes,
-  symbols) in the input and one `〈?〉` in the target (`lost` lists `{word, garbage}`). `identity` = clean chunks,
+  optimistic. `identity` = clean chunks,
   target = input. Quotas `sft.mix` (0.75 / 0.25) x `lang_balance` via
   `data.common.quotas`; eval-split docs skipped; split by doc (`sft.val_frac`). Two passes
   (count ids, then write), so memory holds ids only. Rows `{id, source, lang, doc_id,
@@ -277,28 +266,18 @@ shards; `--limit` counts shards). Details in the `stages/run.py` docstring.
   1-char slack; identity: any edit), missed (a damaged region no edit touches), mixed (both),
   wrong_fix (neither). Up to `max_pairs` (2): greedy first, then sampled by distance to
   chosen. Prompts the model always got right: a `constructed_share` (0.25) of them get one
-  off-policy pair, kinds `constructed` in turn (unchanged, half_fixed, placeholder_dropped,
-  guessed = a lost word's `〈?〉` replaced by another word of the chunk (tried first when the
-  prompt has lost words), overcautious = a fixed word replaced by `〈?〉`). `classify` also
-  types `guessed` (fewer `〈?〉` than chosen, every lost region edited) and `overcautious`
-  (more `〈?〉` than chosen).
+  off-policy pair, kinds `constructed` in turn (unchanged, half_fixed, placeholder_dropped).
   Rows TRL conversational + `rejected_type` (`greedy:|sampled:|constructed:<kind>`), `source,
   lang, doc_id, chunk_id`; `<stem>.stats.json` (greedy_right, all_right, types).
 - **First SFT/DPO on the 5090 (test data):** QLoRA SFT on `data sft` output (3,935 rows,
   micro-batch 8, 1 epoch, 64 min, 19.7 GiB peak). Doc CER on 71 OCR test docs (after noise
   removal 0.58%): base 0.23%, SFT flagged 0.13%, SFT `--all` 0.01% (no rejections; clean chunks
-  come back unchanged). Remaining errors: unrecoverable Korean words replaced by plausible
-  guesses (the data never teaches 〈?〉). `data dpo` with the merged SFT model: greedy right
+  come back unchanged). Remaining errors: destroyed Korean words replaced by plausible
+  guesses. `data dpo` with the merged SFT model: greedy right
   on 1,299/1,300 unseen prompts, 10 on-policy pairs, so no DPO training on test data; a
   5-step `train dpo` check ran (328 pairs, 73 s/step, 11.8 GiB). vLLM 0.33 crashed (illegal
   memory access in `punica_gpu.update_metadata`) serving the adapter while base scoring
   requests shared batches: serve a merged model on a second engine instead (README).
-- **`〈?〉` SFT (test data, 4B):** SFT data as before plus `sft.lost` (295 of 3,935 examples), 64 min.
-  On `data/test_lost` (48 docs, 776 destroyed words; truth has `〈?〉`), `correct --all`: old SFT
-  CER 0.20%, 97% of destroyed words invented; new SFT CER 0.08%, 63% marked `〈?〉`, 30%
-  invented, 7% left, 42 `〈?〉` where the truth has a word; better on 44/48 docs (Wilcoxon
-  p ~ 1e-8). Open issue: 37 of the new model's 47 re-score rejections contain `〈?〉` (the base
-  model finds `〈?〉` surprising, so the bpc gain check fails); fix by not scoring `〈?〉` tokens.
 - **Calibration on chunks:** `calibrate` reads `score` output (`calibrate.run.flat_scores`
   lifts the `score` dict to the top level). Workflow in README.md, "Calibration (chunks)".
 - **Corrupt speed:** generators pick positions by rejection sampling (`ops._sample`: 64 random
@@ -408,8 +387,7 @@ shards; `--limit` counts shards). Details in the `stages/run.py` docstring.
   its src/gold positions and text.
 - **Op types**, checked in this order: `header_footer_insert` (a dropped run of at least
   `gold.errors.header_footer_min_chars` (8) non-space chars, or a bare page number, at word
-  boundaries), `unrecoverable` (gold has 〈?〉; not in the original spec, added so these
-  don't land in `other`), `hyphen_wrap`, `newline_in_sentence`, `missing_space`,
+  boundaries), `hyphen_wrap`, `newline_in_sentence`, `missing_space`,
   `extra_space`, `ligature`, `quote_dash`, `hangul_garbled` (non-Hangul run → Hangul),
   `dropped_char`, `duplicated_char` (the deleted text repeats its neighbor),
   `char_confusion` (at most `gold.errors.confusion_max_len` (4) chars each side, no whitespace),
@@ -449,8 +427,7 @@ then masks again; see the Refine section) for calibration inputs and synthetic t
     span.
   - `header_footer_insert` (page number and/or a `corrupt.header_phrases` entry).
   - The rest: ligature glyph or dropped ligature, typographic↔ASCII quotes and dashes,
-    dropped and duplicated chars and words, junk symbols for `other`, and junk glyphs for an
-    existing `〈?〉`.
+    dropped and duplicated chars and words, and junk symbols for `other`.
 - **Safety:** edits touch prose only and keep a 2-char gap from each other, so math and
   tables are copied verbatim.
 - **Ops:** `applied_ops` entries are `{type, script?, gold_start, gold_end, src_start, src_end,
@@ -505,9 +482,9 @@ clean_scored damaged_scored data/calibration`. `calibrate.run.flat_scores` lifts
 fits `score.noise` core (per script) / extend / min_chars on the OCR side of `gold chunks` sft/ +
 dpo/ (`gold_status: ok`; never eval/).
 - **Labels** (`noise_labels`): Levenshtein opcodes OCR -> gold, adjacent edits merged into
-  regions; a region whose gold side has no letter/digit and no `〈?〉` was deleted by the
+  regions; a region whose gold side has no letter/digit was deleted by the
   annotator (REAL: page numbers, footers, junk) and is **ignored** (neither noise nor text);
-  everything the truth keeps (as is, corrected, or replaced by `〈?〉`) is **text**.
+  everything the truth keeps (as is or corrected) is **text**.
 - **Noise = inserted junk only** (`insert_junk`): every chunk is also scored as a copy with
   `calibrate.noise.insert_runs` (1-3) runs of `insert_chars` (5-60) non-space chars (symbols,
   `lI1` Latin, random Hangul, loose jamo, digit/symbol table leftovers; no markdown/math/
@@ -561,9 +538,6 @@ What `correct` (`stages.run.text_checks` + `check_scorer`) requires of a correct
   <= `max_edit_ratio` (both on the masked text).
 - `language`: same `detect_lang`, and the Hangul share of prose letters moves by at most
   `max_script_shift`.
-- `gap_fill`: each source `〈?〉` (adjacent ones count as one) is kept or filled with 1–
-  `gap_fill_max_syllables` Hangul syllables, located by 8 chars of source context on each
-  side. If that context changed, the check fails. (A new `〈?〉` in the answer is allowed.)
 - `scorer` (the re-score): bpc(before) − bpc(after) >= `min_bpc_gain` and spike_frac(after) <=
   `spike_ratio` × before. With `rescore_failed: false`, a correction that already failed a text
   check is not re-scored.
@@ -688,14 +662,13 @@ stage sees the same text:
 | `⟨M#⟩`  | math span (inline `$...$` or display `$$...$$`), `#` = 1-based index per kind within the chunk |
 | `⟨T#⟩`  | HTML table (`<table>...</table>`) |
 | `⟨P#⟩`  | other protected content: URLs, code, citations/refs, image links |
-| `〈?〉`  | emitted by the model where the source is illegible and it cannot decide; never invented away |
 
-`⟨ ⟩` are U+27E8/U+27E9; `〈 〉` in `〈?〉` are U+3008/U+3009, chosen so they never collide.
+`⟨ ⟩` are U+27E8/U+27E9.
 `corpus/placeholders.py`: `substitute(text, spans) -> (masked, mapping)` numbers math and
 table spans in order of appearance (⟨M1⟩ ⟨M2⟩ ⟨T1⟩ ...; mapping is position-ordered);
 `restore(masked, mapping)` raises `PlaceholderError` unless every placeholder appears exactly
 once and in the original order. The `placeholders` check builds on this. Constants are in `schema.py`
-(`MATH_PH`, `TABLE_PH`, `PROTECTED_PH`, `UNCERTAIN`).
+(`MATH_PH`, `TABLE_PH`, `PROTECTED_PH`).
 
 ## Install (offline)
 

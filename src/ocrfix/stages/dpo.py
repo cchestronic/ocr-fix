@@ -1,7 +1,7 @@
 """`ocrfix data dpo`: chunk preference pairs, rejected answers mostly from the model itself.
 
 Prompts are made exactly like `data sft` (``stages/data.py`` ``examples``: synthetic = damaged
-chunk -> clean chunk, with the same junk and lost-word insertion; gold = OCR chunk ->
+chunk -> clean chunk, with the same junk insertion; gold = OCR chunk ->
 hand-corrected chunk (`gold chunks` dpo side); identity = clean chunk -> itself), so chosen
 is always the known right text. Prompts whose input or target appears in an
 ``--exclude`` file (the SFT training data) are skipped: the SFT model has learned those
@@ -13,8 +13,6 @@ else the base) answers every prompt once greedily, as `correct` does, and
 answer that differs from chosen is wrong (chosen is exact), and is typed:
   placeholders  a placeholder lost, duplicated or reordered (``restore`` fails)
   truncated     cut at max_tokens
-  guessed       chosen has a 〈?〉 (a lost word) where the answer wrote a word instead
-  overcautious  the answer has a 〈?〉 that chosen hasn't (gave up on text it could fix)
   false_fix     changed text that was already right (identity prompts: any change)
   missed        left damage that chosen fixes, changed nothing else
   wrong_fix     edited the damaged places, but not into chosen
@@ -25,12 +23,9 @@ then sampled ones closest to chosen (near misses: the pair differs only where it
 **Constructed** (off-policy, few): when the model got a prompt right in every answer, a share
 ``constructed_share`` of those prompts gets one constructed rejected answer, taking the kinds
 in ``constructed`` in turn: ``unchanged`` (the damaged input as is), ``half_fixed`` (half of
-the input -> chosen edits undone), ``placeholder_dropped`` (chosen minus one placeholder),
-``guessed`` (a 〈?〉 of chosen replaced by another word of the chunk in the same script; a
-prompt with a lost word tries this kind first), ``overcautious`` (a word of chosen that the
-input had damaged, or any word on an identity prompt, replaced by 〈?〉). They
-only keep the model from drifting on what it already does right; DPO pushes rejected answers
-down relative to the SFT reference, so easy ones teach little.
+the input -> chosen edits undone), ``placeholder_dropped`` (chosen minus one placeholder).
+They only keep the model from drifting on what it already does right; DPO pushes rejected
+answers down relative to the SFT reference, so easy ones teach little.
 
 Rows: TRL conversational ``{id, prompt, chosen, rejected}`` + ``rejected_type`` (``greedy:`` /
 ``sampled:`` / ``constructed:`` + kind), ``source, lang, doc_id, chunk_id``. Answers are cached
@@ -42,7 +37,6 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-import re
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -54,8 +48,7 @@ from rapidfuzz.distance import Levenshtein
 from ocrfix.corpus.placeholders import PLACEHOLDER, PlaceholderError, restore
 from ocrfix.io import iter_jsonl
 from ocrfix.llm.client import Client, run_requests
-from ocrfix.schema import UNCERTAIN
-from ocrfix.stages.data import _WORD, examples
+from ocrfix.stages.data import examples
 from ocrfix.stages.prompt import messages, parse_answer, request_body
 
 
@@ -82,19 +75,6 @@ def classify(inp: str, chosen: str, answer: str, mapping: dict[str, str]) -> str
         return "placeholders"
     gold = _regions(inp, chosen)
     edits = _regions(inp, answer)
-    nq_c, nq_a = chosen.count(UNCERTAIN), answer.count(UNCERTAIN)
-    if nq_a > nq_c:
-        return "overcautious"
-    if nq_a < nq_c:
-        # the regions chosen marks 〈?〉: all edited (a word written there) -> guessed;
-        # one left as is falls through (missed)
-        lost = [
-            (o.src_start, o.src_end)
-            for o in Levenshtein.opcodes(inp, chosen)
-            if o.tag != "equal" and UNCERTAIN in chosen[o.dest_start : o.dest_end]
-        ]
-        if all(_touch(g, edits, 0) for g in lost):
-            return "guessed"
     if not gold:
         return "false_fix"
     false_fix = any(not _touch(e, gold) for e in edits)
@@ -121,54 +101,7 @@ def half_fixed(inp: str, chosen: str, rng: random.Random) -> str | None:
     return "".join(out)
 
 
-def _script(word: str) -> str:
-    return "hangul" if "가" <= word[0] <= "힣" else "latin"
-
-
-def guessed(inp: str, chosen: str, lost: list[dict[str, str]], rng: random.Random) -> str | None:
-    """``chosen`` with the 〈?〉 of one lost word replaced by another word of the chunk in that
-    word's script: a plausible guess."""
-    marks = [
-        o.dest_start + m.start()
-        for o in Levenshtein.opcodes(inp, chosen)
-        if o.tag != "equal"
-        for m in re.finditer(re.escape(UNCERTAIN), chosen[o.dest_start : o.dest_end])
-    ]  # the 〈?〉 the input doesn't have, in order: one per lost word run
-    if not lost or len(marks) != len(lost):
-        return None
-    k = rng.randrange(len(lost))
-    word = lost[k]["word"]
-    pool = sorted({w for w in _WORD.findall(chosen) if _script(w) == _script(word) and w != word})
-    if not pool:
-        return None
-    at = marks[k]
-    return chosen[:at] + rng.choice(pool) + chosen[at + len(UNCERTAIN) :]
-
-
-def overcautious(inp: str, chosen: str, rng: random.Random) -> str | None:
-    """``chosen`` with one word replaced by 〈?〉: a word the input had damaged (a fixable
-    one), or on an identity prompt any word."""
-    words = [(m.start(), m.end()) for m in _WORD.finditer(chosen)]
-    fixed = [
-        (o.dest_start, o.dest_end)
-        for o in Levenshtein.opcodes(inp, chosen)
-        if o.tag != "equal" and UNCERTAIN not in chosen[o.dest_start : o.dest_end]
-    ]
-    if inp != chosen:
-        words = [w for w in words if _touch(w, fixed, 0)]
-    if not words:
-        return None
-    a, b = rng.choice(words)
-    return chosen[:a] + UNCERTAIN + chosen[b:]
-
-
-def constructed(
-    kind: str, inp: str, chosen: str, rng: random.Random, lost: list | None = None
-) -> str | None:
-    if kind == "guessed":
-        return guessed(inp, chosen, lost or [], rng)
-    if kind == "overcautious":
-        return overcautious(inp, chosen, rng)
+def constructed(kind: str, inp: str, chosen: str, rng: random.Random) -> str | None:
     if kind == "unchanged":
         return inp if inp != chosen else None
     if kind == "half_fixed":
@@ -304,11 +237,8 @@ def build_dpo_pairs(
                 rng = random.Random(_h(str(seed), "constructed", ex["id"]))
                 if kinds and rng.random() < float(d["constructed_share"]):
                     order = [kinds[(n_solved + j) % len(kinds)] for j in range(len(kinds))]
-                    if ex.get("lost") and "guessed" in order:
-                        order.remove("guessed")
-                        order.insert(0, "guessed")
                     for kind in order:
-                        text = constructed(kind, user, chosen, rng, ex.get("lost"))
+                        text = constructed(kind, user, chosen, rng)
                         if text and text != chosen:
                             picked.append((text, "constructed:" + kind))
                             break

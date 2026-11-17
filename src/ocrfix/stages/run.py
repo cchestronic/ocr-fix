@@ -16,7 +16,7 @@ was removed. A chunk with no prose left gets status "noise" (never sent to the c
 flagged (``flag``, or the calibration applied now), or with ``--all``. Per chunk, at once:
   1. the correction model rewrites the whole masked chunk (`stages/prompt.py`);
   2. checks: placeholders (every one back, once, in order), markers (no new math/tables
-     after restoring), length_ratio, edit_ratio, language, gap_fill (``correct.checks``);
+     after restoring), length_ratio, edit_ratio, language (``correct.checks``);
   3. if they pass, re-score the corrected text; ``scorer`` needs bpc to drop by
      ``correct.checks.min_bpc_gain`` and spike_frac not to rise past ``spike_ratio`` x before;
   4. accepted: ``text`` = correction, ``score`` = the new score, status "accepted";
@@ -60,7 +60,6 @@ from ocrfix.stages.score import (
 from ocrfix.verify.checks import (
     Check,
     check_edit,
-    check_gap_fill,
     check_language,
     check_length,
     check_markers,
@@ -336,7 +335,6 @@ def text_checks(
         check_length(src, out, float(lo), float(hi)),
         check_edit(src, out, float(v["max_edit_ratio"])),
         check_language(raw_src, src_spans, raw_out, float(v["max_script_shift"]), lang_opts),
-        check_gap_fill(src, out, int(v["gap_fill_max_syllables"])),
     ]
 
 

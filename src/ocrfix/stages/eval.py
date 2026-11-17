@@ -14,9 +14,6 @@ most chunk characters):
                      truth), over all system edits; also per 1000 OCR chars
   recall[type]       truth edits (`errors.align.diff_ops`, the `errors table` types) that the
                      output gets right: no remaining output -> truth edit touches them
-  uncertain          each 〈?〉 the truth adds (a lost word): the output has 〈?〉 there
-                     (marked), still the OCR text (left), or anything else (invented); and
-                     false_uncertain: 〈?〉 in the output where the truth has none
 Paired Wilcoxon signed-rank on per-document CER for each pair of systems, Holm-adjusted.
 Writes metrics.json, per_doc.jsonl, report.md.
 """
@@ -24,7 +21,6 @@ Writes metrics.json, per_doc.jsonl, report.md.
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from itertools import combinations, groupby
@@ -41,10 +37,6 @@ from ocrfix.eval.align import touches
 from ocrfix.eval.metrics import spacing_errors, word_edits
 from ocrfix.eval.stats import holm, wilcoxon
 from ocrfix.io import list_shards, open_text
-from ocrfix.schema import UNCERTAIN
-
-_Q = re.compile(re.escape(UNCERTAIN))
-OUTCOMES = ("marked", "left", "invented")
 
 
 @dataclass
@@ -70,8 +62,6 @@ class Counts:
     false_fixes: int = 0
     ops: Counter = field(default_factory=Counter)
     fixed: Counter = field(default_factory=Counter)
-    uncertain: Counter = field(default_factory=Counter)
-    false_uncertain: int = 0
 
     def add(self, o: Counts) -> None:
         for k, v in o.__dict__.items():
@@ -84,7 +74,6 @@ class Counts:
         def r(a, b):
             return round(a / b, 6) if b else None
 
-        n_q = sum(self.uncertain.values())
         return {
             "docs": self.docs,
             "truth_chars": self.truth_chars,
@@ -96,8 +85,6 @@ class Counts:
             "edits": self.sys_edits,
             "recall": {k: r(self.fixed[k], n) for k, n in sorted(self.ops.items())},
             "truth_ops": dict(sorted(self.ops.items())),
-            "uncertain": {k: r(self.uncertain[k], n_q) for k in OUTCOMES} | {"n": n_q},
-            "false_uncertain": self.false_uncertain,
         }
 
 
@@ -106,22 +93,6 @@ def _regions(a: str, b: str, side: str) -> list[tuple[int, int]]:
     if side == "src":
         return [(o.src_start, o.src_end) for o in ops if o.tag != "equal"]
     return [(o.dest_start, o.dest_end) for o in ops if o.tag != "equal"]
-
-
-def _map(ops, a: int, b: int) -> tuple[int, int]:
-    """[a, b) in the opcodes' source -> the covering range of their destination."""
-    lo = hi = None
-    for o in ops:
-        if o.src_end < a or o.src_start > b:
-            continue
-        if o.tag == "equal":
-            s = o.dest_start + max(a - o.src_start, 0)
-            e = o.dest_start + min(b, o.src_end) - o.src_start
-        else:
-            s, e = o.dest_start, o.dest_end
-        lo = s if lo is None else min(lo, s)
-        hi = e if hi is None else max(hi, e)
-    return (lo or 0, hi or 0)
 
 
 def score_doc(d: Doc, out: str, opts: dict[str, Any]) -> Counts:
@@ -136,25 +107,9 @@ def score_doc(d: Doc, out: str, opts: dict[str, Any]) -> Counts:
     c.false_fixes = sum(not any(touches(a, b, s, e) for s, e in gold_src) for a, b in edits)
     out_truth = Levenshtein.opcodes(out, d.truth)
     residual = [(o.dest_start, o.dest_end) for o in out_truth if o.tag != "equal"]
-    truth_out = Levenshtein.opcodes(d.truth, out)
     for op in d.truth_ops:
         c.ops[op.key] += 1
-        ok = not any(touches(a, b, op.gold_start, op.gold_end) for a, b in residual)
-        c.fixed[op.key] += ok
-        if UNCERTAIN in op.gold and UNCERTAIN not in op.src:
-            lo, hi = _map(truth_out, op.gold_start, op.gold_end)
-            seg = out[lo:hi]
-            if UNCERTAIN in seg:
-                k = "marked"
-            elif seg.strip() and Levenshtein.normalized_distance(seg.strip(), op.src.strip()) < 0.5:
-                k = "left"
-            else:
-                k = "invented"
-            c.uncertain[k] += 1
-    # 〈?〉 in the output that the alignment doesn't put on a truth 〈?〉
-    equal = [(o.src_start, o.src_end) for o in out_truth if o.tag == "equal"]
-    for m in _Q.finditer(out):
-        c.false_uncertain += not any(a <= m.start() and m.end() <= b for a, b in equal)
+        c.fixed[op.key] += not any(touches(a, b, op.gold_start, op.gold_end) for a, b in residual)
     return c
 
 
@@ -217,8 +172,7 @@ def run_eval(
             cer = c.char_edits / max(len(truth), 1)
             cers[name].append(cer)
             row[name] = {"cer": round(cer, 6), "edits": c.sys_edits,
-                         "false_fixes": c.false_fixes,
-                         "uncertain": dict(c.uncertain)}  # fmt: skip
+                         "false_fixes": c.false_fixes}  # fmt: skip
         per_doc.append(row)
 
     systems_out = {
@@ -258,17 +212,15 @@ def format_report(res: dict[str, Any]) -> str:
     groups = sorted({g for v in m.values() for g in v}, key=lambda g: (g != "all", g))
     lines = [f"# Eval: {res['docs']} documents vs {res['truth_dir']}", ""]
     for g in groups:
-        lines += [f"## {g}", "", "| system | docs | CER | WER | SER | false fixes | "
-                  "〈?〉 marked | left | invented | false 〈?〉 |", "|---" * 10 + "|"]  # fmt: skip
+        lines += [f"## {g}", "", "| system | docs | CER | WER | SER | false fixes |",
+                  "|---" * 6 + "|"]  # fmt: skip
         for n in names:
             s = m[n].get(g)
             if not s:
                 continue
-            u = s["uncertain"]
             lines.append(
                 f"| {n} | {s['docs']} | {_pct(s['cer'])} | {_pct(s['wer'])} | {_pct(s['ser'])} | "
-                f"{_pct(s['false_fix_rate'], 1)} | {_pct(u['marked'], 1)} | {_pct(u['left'], 1)} "
-                f"| {_pct(u['invented'], 1)} | {s['false_uncertain']} |"
+                f"{_pct(s['false_fix_rate'], 1)} |"
             )
         lines.append("")
     types = sorted({k for v in m.values() for k in v["all"]["truth_ops"]})

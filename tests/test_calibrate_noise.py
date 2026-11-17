@@ -33,11 +33,11 @@ LN2 = math.log(2)
 
 def test_labels_deleted_junk_only():
     ocr = "Results ▯▯▯ ※¶ are good. 방볍 here 쨈몤듡 end ⟨M1⟩."
-    gold = "Results are good. 방법 here 〈?〉 end ⟨M1⟩."
+    gold = "Results are good. 방법 here 결과를 end ⟨M1⟩."
     lab = noise_labels(ocr, gold)
     noisy = "".join(c for c, x in zip(ocr, lab, strict=True) if x == REAL)
     assert noisy.replace(" ", "") == "▯▯▯※¶"  # deleted junk
-    # a corrected word and a word replaced by 〈?〉 are text
+    # corrected words are text, even a badly garbled one
     for w in ("방볍", "쨈몤듡", "Results", "⟨M1⟩"):
         i = ocr.index(w)
         assert not lab[i : i + len(w)].any()

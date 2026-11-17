@@ -1,7 +1,7 @@
 """`ocrfix gold chunks <gold_dir> <out_dir>`: hand-corrected markdown pairs -> chunk gold.
 
 Input: ``<gold_dir>/ocr/**.md`` (the MinerU output, never edited) and ``<gold_dir>/truth/**.md``
-(a corrected copy at the same relative path; lost words written as 〈?〉).
+(a corrected copy at the same relative path).
 
 Only the OCR side is chunked (`ocrfix chunk`, into ``<out_dir>/chunks``, rebuilt on every run),
 exactly as the corpus is, so the gold chunks are the model's real input. Each chunk's gold is
@@ -27,7 +27,7 @@ pins every document to its side, so adding gold later never moves a document. Ou
 ``<out_dir>/{sft,dpo,eval}/part-00000.jsonl``: every chunk of every document of that side
 (complete documents, so `score` / `correct` and `reconstruct` work on them), each chunk
 row plus ``gold_text``, ``gold_placeholders``, ``gold_status``, ``split``. ``stats.json``
-counts documents, chunks per status, edited chunks and 〈?〉.
+counts documents, chunks per status and edited chunks.
 """
 
 from __future__ import annotations
@@ -47,7 +47,6 @@ from rapidfuzz.distance import Levenshtein
 from ocrfix.chunks.split import atoms_of, normalize, render
 from ocrfix.corpus.tagger import tag_spans
 from ocrfix.io import iter_jsonl
-from ocrfix.schema import UNCERTAIN
 
 SIDES = ("eval", "dpo", "sft")
 
@@ -202,7 +201,7 @@ def build_gold_chunks(
 
     st: dict[str, Any] = {
         "docs": Counter(), "chunks": defaultdict(Counter), "edited_chunks": Counter(),
-        "uncertain": Counter(), "suffix_changed": Counter(), "no_truth": [],
+        "suffix_changed": Counter(), "no_truth": [],
         "chunk_errors": cst.errors,
     }  # fmt: skip
     sides: dict[str, str] = {}
@@ -233,7 +232,6 @@ def build_gold_chunks(
                 st["suffix_changed"][side] += g["gold_suffix"] != r["suffix"]
                 if g["gold_status"] == "ok":
                     st["edited_chunks"][side] += g["gold_text"] != r["source_text"]
-                    st["uncertain"][side] += g["gold_text"].count(UNCERTAIN)
                 handles[side].write(json.dumps(r, ensure_ascii=False) + "\n")
     finally:
         for h in handles.values():

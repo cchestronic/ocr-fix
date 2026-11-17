@@ -14,16 +14,10 @@ the content as well, for templates that don't). Sources:
              ``lI1``-like strings, random Hangul) after sentence ends or as their own
              paragraph, which the target drops: the junk `score` leaves (under
              ``score.noise.min_chars``, or predictable).
-             ``sft.lost``: a share get 1..max_runs lost words: a word the input
-             holds intact (and that occurs only once in the chunk, so the context can't give
-             it back) is replaced by garbage drawn without looking at its letters (random
-             syllables or letters of about its length, boxes, symbols), and by one 〈?〉 in
-             the target. The rest of the chunk's damage is recoverable and fixed as usual, so
-             the model sees both sides of the line: damaged -> fix, nothing left -> 〈?〉.
   gold       `gold chunks` rows (the sft side): input = the OCR chunk, target = the
-             hand-corrected text (``gold_text``, with 〈?〉 for lost words); only
-             ``gold_status: ok`` rows; ``sft.gold_repeats`` copies each (SFT only);
-             no junk or lost words added (the real damage is there already).
+             hand-corrected text (``gold_text``); only ``gold_status: ok`` rows;
+             ``sft.gold_repeats`` copies each (SFT only); no junk added (the real damage
+             is there already).
   identity   clean chunks (`chunk` or `score` output): target = input, so the model
              learns to leave correct text alone.
 
@@ -45,12 +39,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rapidfuzz.distance import Levenshtein
-
 from ocrfix.corpus.placeholders import PLACEHOLDER
 from ocrfix.data.common import EMPTY_THINK, in_val, quotas
 from ocrfix.io import iter_jsonl
-from ocrfix.schema import UNCERTAIN
 from ocrfix.stages.prompt import messages
 
 # junk alphabets; no markdown, math, table, code or placeholder syntax ($ | ` \ < > [ ] ⟨ ⟩ 〈 〉)
@@ -103,83 +94,6 @@ def add_junk(text: str, rng: random.Random, opts: dict[str, Any]) -> tuple[str, 
     return "".join(out), [s.strip() for _, s in sorted(inserts, key=lambda x: x[0])]
 
 
-# --- lost words: OCR left nothing of the word, so the answer is 〈?〉 -------------------------
-
-# a candidate word: 2..8 Hangul syllables or 4+ Latin letters, not touching other letters,
-# digits, placeholders or 〈?〉
-_WORD = re.compile(r"(?<![\w⟨⟩〈〉-])(?:[가-힣]{2,8}|[A-Za-z]{4,})(?![\w⟨⟩〈〉-])")
-_BOXES = "口□▯■"
-_LATIN_GARBLE = "abcdefghijklmnopqrstuvwxyz0123456789&%@"
-
-
-def garble(word: str, rng: random.Random) -> str:
-    """Garbage in place of ``word`` that tells nothing about it (drawn without looking at its
-    letters, only its length and script): random syllables / letters, boxes, or symbols."""
-    n = max(1, len(word) + rng.randint(-1, 1))
-    kind = rng.choices(["random", "boxes", "symbols"], weights=[0.6, 0.2, 0.2])[0]
-    if kind == "boxes":
-        return rng.choice(_BOXES) * n
-    if kind == "symbols":
-        return "".join(rng.choice(SYMBOLS) for _ in range(min(n, 4)))
-    if "가" <= word[0] <= "힣":
-        return "".join(chr(rng.randint(0xAC00, 0xD7A3)) for _ in range(n))
-    return "".join(rng.choice(_LATIN_GARBLE) for _ in range(n))
-
-
-def lost_candidates(inp: str, target: str) -> list[tuple[int, int, int]]:
-    """Words of ``target`` that the input holds unchanged and that occur only once in the
-    target (a word repeated elsewhere is recoverable from context): (target start, end,
-    input start)."""
-    equal = [
-        (o.dest_start, o.dest_end, o.src_start)
-        for o in Levenshtein.opcodes(inp, target)
-        if o.tag == "equal"
-    ]
-    counts = Counter(m.group() for m in _WORD.finditer(target))
-    out = []
-    for m in _WORD.finditer(target):
-        if counts[m.group()] > 1:
-            continue
-        for a, b, s in equal:
-            # the word and one char on each side unchanged, so it isn't next to damage
-            if a <= max(m.start() - 1, 0) and min(m.end() + 1, len(target)) <= b:
-                out.append((m.start(), m.end(), s + m.start() - a))
-                break
-    return out
-
-
-def add_lost(
-    inp: str, target: str, rng: random.Random, opts: dict[str, Any]
-) -> tuple[str, str, list[dict[str, str]]]:
-    """1..max_runs words (a run of two adjacent words with ``two_words``) replaced by garbage
-    in the input and by one 〈?〉 in the target; (input, target, [{word, garbage}])."""
-    cands = lost_candidates(inp, target)
-    picked: list[tuple[int, int, int, int]] = []  # target a, b; input a, b
-    for _ in range(rng.randint(1, int(opts["max_runs"]))):
-        free = [c for c in cands if all(c[1] + 2 <= p[0] or p[1] + 2 <= c[0] for p in picked)]
-        if not free:
-            break
-        i = rng.randrange(len(free))
-        a, b, s = free[i]
-        e = s + (b - a)
-        nxt = free[i + 1] if i + 1 < len(free) else None
-        if nxt and target[b : nxt[0]] == " " and rng.random() < float(opts["two_words"]):
-            b, e = nxt[1], nxt[2] + (nxt[1] - nxt[0])
-        picked.append((a, b, s, e))
-    picked.sort()
-    lost, t_out, i_out, tp, ip = [], [], [], 0, 0
-    for a, b, s, e in picked:
-        words = target[a:b].split(" ")
-        junk = " ".join(garble(w, rng) for w in words)
-        lost.append({"word": target[a:b], "garbage": junk})
-        t_out += [target[tp:a], UNCERTAIN]
-        i_out += [inp[ip:s], junk]
-        tp, ip = b, e
-    t_out.append(target[tp:])
-    i_out.append(inp[ip:])
-    return "".join(i_out), "".join(t_out), lost
-
-
 @dataclass
 class DataStats:
     rows: dict[str, int] = field(default_factory=dict)
@@ -187,7 +101,6 @@ class DataStats:
     pool: dict[str, dict[str, int]] = field(default_factory=dict)
     taken: dict[str, dict[str, int]] = field(default_factory=dict)
     with_junk: int = 0
-    with_lost: int = 0
     train: int = 0
     val: int = 0
 
@@ -253,15 +166,7 @@ def examples(
                 if st is not None:
                     st.dropped[source][why] += 1
                 continue
-            lost_opts = opts.get("lost") or {}
-            lost = None
-            if source == "synthetic" and float(lost_opts.get("prob", 0)) > 0:
-                rng = random.Random(_id(str(seed), "lost", r["chunk_id"]))
-                if rng.random() < float(lost_opts["prob"]):
-                    inp, target, lost = add_lost(inp, target, rng, lost_opts)
             ex = _example(source, r, inp, target, opts["empty_think"])
-            if lost:
-                ex["lost"] = lost
             if source == "synthetic" and float(junk["prob"]) > 0:
                 rng = random.Random(_id(str(seed), "junk", r["chunk_id"]))
                 if rng.random() < float(junk["prob"]):
@@ -316,7 +221,6 @@ def build_sft_data(
                 handles[side].write(json.dumps(ex, ensure_ascii=False) + "\n")
                 setattr(st, side, getattr(st, side) + 1)
                 st.with_junk += "junk" in ex
-                st.with_lost += "lost" in ex
     finally:
         for h in handles.values():
             h.close()

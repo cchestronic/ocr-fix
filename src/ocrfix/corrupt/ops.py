@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ocrfix.errors.align import is_hangul, spacing_script
-from ocrfix.schema import UNCERTAIN
 
 LIGATURE_GLYPHS = {"ffi": "ﬃ", "ffl": "ﬄ", "ff": "ﬀ", "fi": "ﬁ", "fl": "ﬂ"}
 _LIGATURE = re.compile("ffi|ffl|ff|fi|fl")
@@ -30,7 +29,6 @@ QUOTE_DASH = {
     "—": ["--", "-", "–"],
     "–": ["-", "--"],
 }
-JUNK_GLYPHS = ["口", "■", "□", "▯", "�"]
 _LATIN_WORD = re.compile(r"[A-Za-z]{5,}")
 _COMPOUND = re.compile(r"[A-Za-z]{2,}-(?=[A-Za-z]{2,})")
 _WORD = re.compile(r"[^\W\d_]{2,}")
@@ -267,14 +265,6 @@ def header_footer(rng, p, res, script):
     return Edit("header_footer_insert", i, i, text + " ")
 
 
-def unrecoverable(rng, p, res, script):
-    m = _pick(rng, p.find(UNCERTAIN))
-    if m is None:
-        return None
-    junk = "".join(rng.choice(JUNK_GLYPHS) for _ in range(rng.randint(1, 2)))
-    return Edit("unrecoverable", m.start(), m.end(), junk)
-
-
 def other(rng, p, res, script):
     """Junk symbol inserted at a word start."""
     t = p.text
@@ -286,7 +276,6 @@ def other(rng, p, res, script):
 
 GENERATORS: dict[str, Gen] = {
     "header_footer_insert": header_footer,
-    "unrecoverable": unrecoverable,
     "hyphen_wrap": hyphen_wrap,
     "newline_in_sentence": newline,
     "missing_space": space_delete,

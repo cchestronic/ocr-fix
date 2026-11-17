@@ -12,11 +12,10 @@ from typing import Any, Literal
 SpanKind = Literal["prose", "math", "table"]
 SPAN_KINDS: tuple[str, ...] = ("prose", "math", "table")
 
-# Placeholders (see CLAUDE.md). Note ⟨⟩ are U+27E8/U+27E9; 〈〉 are U+3008/U+3009.
+# Placeholders (see CLAUDE.md). Note ⟨⟩ are U+27E8/U+27E9.
 MATH_PH = "⟨M{}⟩"
 TABLE_PH = "⟨T{}⟩"
 PROTECTED_PH = "⟨P{}⟩"
-UNCERTAIN = "〈?〉"
 
 
 def nfc(s: str) -> str:

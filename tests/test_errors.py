@@ -71,10 +71,10 @@ PAIRS = [
             ("newline_in_sentence.ko", "\n", " "),
         ],
     ),
-    (  # 9. ko: unreadable digit -> 〈?〉, and a longer rewrite -> other
+    (  # 9. ko: a misread digit -> char_confusion, and a longer rewrite -> other
         "반응 온도는 3口0 ℃이며 시간은 xq#zz7 이다.",
-        "반응 온도는 3〈?〉0 ℃이며 시간은 120min 이다.",
-        [("unrecoverable", "口", "〈?〉"), ("other", "xq#zz7", "120min")],
+        "반응 온도는 350 ℃이며 시간은 120min 이다.",
+        [("char_confusion", "口", "5"), ("other", "xq#zz7", "120min")],
     ),
     (  # 10. en: a short junk insertion (other), placeholders untouched
         "Given ⟨M1⟩ the loss ⟨M2⟩ is ~ minimized.",
@@ -158,13 +158,18 @@ def test_tables(tmp_path):
     expected = Counter(key.split(".")[0] for _, _, exp in PAIRS for key, _, _ in exp)
     assert total["counts"] == {t: expected[t] for t in TYPES if expected[t]}
     assert total["n_ops"] == sum(expected.values())
-    assert total["per_1000"]["char_confusion"] == round(3 * 1000 / total["n_chars"], 3)
+    assert total["per_1000"]["char_confusion"] == round(4 * 1000 / total["n_chars"], 3)
     assert total["spacing_per_1000"]["missing_space.ko"] > 0
     assert sum(total["histogram"].values()) == 10
     # placeholders don't count as chars
     assert total["n_chars"] == sum(len(r["gold_text"]) for r in rows) - 2 * len("⟨M1⟩")
     top = table["char_confusions"]["*"]
-    assert {(c["src"], c["gold"]) for c in top} == {("걸", "결"), ("1", "l"), ("rn", "m")}
+    assert {(c["src"], c["gold"]) for c in top} == {
+        ("걸", "결"),
+        ("1", "l"),
+        ("rn", "m"),
+        ("口", "5"),
+    }
 
     cmap = json.loads(paths[1].read_text("utf-8"))["hangul_garbled"]
     assert cmap == [

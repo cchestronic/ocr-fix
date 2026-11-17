@@ -6,19 +6,15 @@ informative on pass). The cheap text checks run first; ``scorer`` needs re-score
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
 from ocrfix.corpus import tag_spans
 from ocrfix.corpus.lang import detect_lang, script_counts
 from ocrfix.editdist import levenshtein
-from ocrfix.schema import UNCERTAIN, Span
+from ocrfix.schema import Span
 
-CHECKS = ("markers", "length_ratio", "edit_ratio", "language", "gap_fill", "scorer")
-_HANGUL_FILL = "[가-힣]{{1,{n}}}"
-CONTEXT = 8  # chars on each side of 〈?〉 used to locate the fill
-_GAP_RUN = re.compile(f"(?:{re.escape(UNCERTAIN)})+")
+CHECKS = ("markers", "length_ratio", "edit_ratio", "language", "scorer")
 
 
 @dataclass(frozen=True)
@@ -89,37 +85,6 @@ def check_language(
     return Check(
         "language", shift <= max_shift, f"{a}; Hangul share moved {shift:.3f} (cap {max_shift})"
     )
-
-
-def check_gap_fill(src: str, dst: str, max_syllables: int) -> Check:
-    """Each 〈?〉 of the source is kept, or filled with 1..max_syllables Hangul syllables.
-
-    The fill is located by the source text around the 〈?〉 (up to CONTEXT chars each side,
-    stopping at a neighbouring 〈?〉); if that context is gone, the check fails. Adjacent
-    〈?〉〈?〉 count as one gap."""
-    if UNCERTAIN not in src:
-        return Check("gap_fill", True, "no 〈?〉 in source")
-    # adjacent 〈?〉〈?〉 are one gap (one fill)
-    src, dst = _GAP_RUN.sub(UNCERTAIN, src), _GAP_RUN.sub(UNCERTAIN, dst)
-    fill_ok = re.compile(_HANGUL_FILL.format(n=max_syllables))
-    parts = src.split(UNCERTAIN)
-    pos, fills = 0, []
-    for i in range(len(parts) - 1):
-        left = parts[i][-CONTEXT:]
-        right = parts[i + 1][:CONTEXT]
-        lhs = re.escape(left) if left else (r"\A" if i == 0 else "")
-        body = "(.*?)" if right else "(.*)"
-        rhs = re.escape(right) if right else r"\Z"
-        m = re.compile(lhs + body + rhs, re.DOTALL).search(dst, pos)
-        if m is None:
-            return Check("gap_fill", False, f"text around 〈?〉 #{i + 1} changed")
-        fill = m.group(1)
-        if fill != UNCERTAIN and not fill_ok.fullmatch(fill):
-            return Check("gap_fill", False, f"〈?〉 #{i + 1} filled with {fill!r}")
-        fills.append(fill)
-        pos = m.start(1) + len(fill)
-    kept = sum(f == UNCERTAIN for f in fills)
-    return Check("gap_fill", True, f"{len(fills) - kept} filled, {kept} kept")
 
 
 def check_scorer(

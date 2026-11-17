@@ -220,10 +220,7 @@ def data_sft_cmd(
         )  # fmt: skip
     except ValueError as e:
         raise typer.BadParameter(str(e)) from None
-    typer.echo(
-        f"{out_dir}: train {st.train}, val {st.val} "
-        f"({st.with_junk} with junk, {st.with_lost} with lost words)"
-    )
+    typer.echo(f"{out_dir}: train {st.train}, val {st.val} ({st.with_junk} with junk)")
     for s, langs in st.taken.items():
         typer.echo(f"  {s:<9} taken {langs} of {st.pool[s]}; dropped {dict(st.dropped[s])}")
 
@@ -305,7 +302,7 @@ def eval_cmd(
     overrides: SetOpt = None,
 ) -> None:
     """Whole corrected documents vs the hand truth: CER/WER/SER, false fixes, recall by error
-    type, how each lost word (〈?〉) was answered, paired Wilcoxon; report.md."""
+    type, paired Wilcoxon; report.md."""
     from ocrfix.stages.eval import parse_system, run_eval
 
     if len(paths) < 2:
@@ -326,9 +323,7 @@ def eval_cmd(
         raise typer.BadParameter(str(e)) from None
     for name, groups in res["metrics"].items():
         o = groups["all"]
-        u = o["uncertain"]
-        q = f"; 〈?〉 {u['n']}: marked {u['marked']}, invented {u['invented']}" if u["n"] else ""
-        typer.echo(f"{name:<12} CER {o['cer']:.4%}  false-fix {o['false_fix_rate']}{q}")
+        typer.echo(f"{name:<12} CER {o['cer']:.4%}  false-fix {o['false_fix_rate']}")
     typer.echo(f"{out_dir}/report.md ({res['docs']} documents)")
 
 
@@ -450,10 +445,7 @@ def gold_chunks_cmd(
         raise typer.BadParameter(str(e)) from None
     typer.echo(f"{out_dir}: documents {st['docs']}")
     for side, counts in st["chunks"].items():
-        typer.echo(
-            f"  {side:<4} chunks {counts}; edited {st['edited_chunks'].get(side, 0)}, "
-            f"〈?〉 {st['uncertain'].get(side, 0)}"
-        )
+        typer.echo(f"  {side:<4} chunks {counts}; edited {st['edited_chunks'].get(side, 0)}")
     if st["no_truth"]:
         typer.echo(f"  no truth file for {len(st['no_truth'])} documents, e.g. "
                    f"{st['no_truth'][:3]}", err=True)  # fmt: skip

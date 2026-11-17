@@ -207,8 +207,7 @@ def test_text_checks_on_masked_chunks():
     assert [c.name for c in swapped] == ["placeholders"] and not swapped[0].passed
 
 
-VERIFY = {"length_ratio": [0.8, 1.25], "max_edit_ratio": 0.15, "max_script_shift": 0.1,
-          "gap_fill_max_syllables": 4}  # fmt: skip
+VERIFY = {"length_ratio": [0.8, 1.25], "max_edit_ratio": 0.15, "max_script_shift": 0.1}
 LANG = {"dominant": 0.8, "mixed_min": 0.1, "hangul_weight": 2.0}
 
 

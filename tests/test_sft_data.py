@@ -8,8 +8,7 @@ import re
 from pathlib import Path
 
 from ocrfix.corpus.placeholders import PLACEHOLDER
-from ocrfix.schema import UNCERTAIN
-from ocrfix.stages.data import add_junk, add_lost, build_sft_data, junk_run, lost_candidates
+from ocrfix.stages.data import add_junk, build_sft_data, junk_run
 from ocrfix.stages.prompt import messages
 
 FORBIDDEN = re.compile(r"[$|`\\<>\[\]⟨⟩〈〉〈〉#*_]")
@@ -48,37 +47,6 @@ def test_add_junk_only_inserts():
             )
         assert rest == text
         assert PLACEHOLDER.findall(noisy) == ["⟨M1⟩"]
-
-
-LOST = {"prob": 1.0, "max_runs": 2, "two_words": 0.3}
-
-
-def test_lost_candidates_skip_damage_and_repeats():
-    gold = "제안한 방법은 ⟨M1⟩ 실험에서 효과적으로 동작하였다. 제안한 estimator converges quickly."
-    inp = "제안한 방법은 ⟨M1⟩ 실험에서 효과적으로 동작하였디. 제안한 estimafor converges quickly."
-    words = {gold[a:b] for a, b, _ in lost_candidates(inp, gold)}
-    # damaged words and their neighbours' edges are out; 제안한 occurs twice
-    assert words == {"방법은", "실험에서", "효과적으로", "converges", "quickly"}
-
-
-def test_add_lost_garbage_in_uncertain_out():
-    gold = (
-        "제안한 방법은 ⟨M1⟩ 실험에서 효과적으로 동작하였다. "
-        "The proposed estimator converges quickly."
-    )
-    inp = gold.replace("동작하였다", "동작하였디").replace("estimator", "estimafor")
-    for seed in range(100):
-        i2, t2, lost = add_lost(inp, gold, random.Random(seed), LOST)
-        assert 1 <= len(lost) <= 2 and t2.count(UNCERTAIN) == len(lost)
-        assert PLACEHOLDER.findall(i2) == PLACEHOLDER.findall(t2) == ["⟨M1⟩"]
-        # undo: garbage -> word in the input, 〈?〉 -> word in the target gives back the originals
-        back_i, back_t = i2, t2
-        for x in lost:
-            assert x["word"] not in i2 or gold.count(x["word"]) > 1
-            assert x["garbage"].count(" ") == x["word"].count(" ")
-            back_i = back_i.replace(x["garbage"], x["word"], 1)
-            back_t = back_t.replace(UNCERTAIN, x["word"], 1)
-        assert back_i == inp and back_t == gold
 
 
 def _write(path: Path, rows: list[dict]) -> Path:
@@ -166,23 +134,8 @@ def test_split_by_document(tmp_path):
     assert st.train + st.val == 120
 
 
-def test_lost_words_in_examples(tmp_path):
-    clean = [_clean(f"d{d}", i) for d in range(4) for i in range(3)]
-    syn = _write(tmp_path / "corrupt.jsonl", [_corrupt(r) for r in clean])
-    o = opts(junk=JUNK | {"prob": 0.0}, lost=LOST | {"prob": 0.5},
-             mix={"synthetic": 1.0, "identity": 0.0})  # fmt: skip
-    st = build_sft_data({"synthetic": [syn]}, tmp_path / "out", opts=o, seed=3)
-    rows = [json.loads(x) for x in (tmp_path / "out" / "train.jsonl").read_text().splitlines()]
-    assert 0 < st.with_lost < len(rows) == st.train
-    for r in rows:
-        user, target = r["messages"][1]["content"], r["messages"][2]["content"]
-        assert target.count(UNCERTAIN) == len(r.get("lost", []))
-        for x in r.get("lost", []):
-            assert x["garbage"] in user
-
-
 def _gold(row: dict, status: str = "ok", split: str = "sft") -> dict:
-    gold = row["source_text"].replace("text", "text 〈?〉")
+    gold = row["source_text"]
     return {**row, "source_text": row["source_text"].replace("Clean", "C1ean"),
             "gold_text": gold, "gold_placeholders": row["placeholders"],
             "gold_status": status, "split": split}  # fmt: skip
@@ -199,6 +152,6 @@ def test_gold_source(tmp_path):
     out = [json.loads(x) for x in (tmp_path / "out" / "train.jsonl").read_text().splitlines()]
     assert len(out) == 12 and sorted({r["repeat"] for r in out}) == [0, 1]
     for r in out:
-        assert r["source"] == "gold" and "junk" not in r and "lost" not in r
-        assert r["messages"][2]["content"].count(UNCERTAIN) == 1
+        assert r["source"] == "gold" and "junk" not in r
+        assert "Clean" in r["messages"][2]["content"]
         assert "C1ean" in r["messages"][1]["content"]

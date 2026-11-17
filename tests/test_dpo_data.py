@@ -23,12 +23,6 @@ def test_classify():
     assert classify(inp, gold, "The model is good.", MAP) == "placeholders"
     assert classify(inp, gold, "The model ⟨M1⟩ ⟨M1⟩ is good.", MAP) == "placeholders"
     assert classify(gold, gold, "The model ⟨M1⟩ is god.", MAP) == "false_fix"  # identity
-    assert classify(gold, gold, "The 〈?〉 ⟨M1⟩ is good.", MAP) == "overcautious"
-    # a lost word: garbage in the input, 〈?〉 in chosen
-    lost_in, lost_gold = "Tbe q8xzw ⟨M1⟩ is goodd.", "The 〈?〉 ⟨M1⟩ is good."
-    assert classify(lost_in, lost_gold, "The model ⟨M1⟩ is good.", MAP) == "guessed"
-    assert classify(lost_in, lost_gold, "The q8xzw ⟨M1⟩ is good.", MAP) == "missed"
-    assert classify(lost_in, lost_gold, "The 〈?〉 ⟨M1⟩ is 〈?〉.", MAP) == "overcautious"
 
 
 def test_constructed_kinds():
@@ -40,23 +34,6 @@ def test_constructed_kinds():
     assert constructed("unchanged", gold, gold, rng) is None
     assert constructed("half_fixed", gold, gold, rng) is None
     assert constructed("placeholder_dropped", inp, gold, rng) == "The model is good."
-    # overcautious: a word the input had damaged becomes 〈?〉; on identity, any word
-    for _ in range(20):
-        o = constructed("overcautious", inp, gold, rng)
-        assert o in (
-            "〈?〉 model ⟨M1⟩ is good.",
-            "The 〈?〉 ⟨M1⟩ is good.",
-            "The model ⟨M1⟩ is 〈?〉.",
-        )
-        assert classify(inp, gold, o, MAP) == "overcautious"
-    assert "〈?〉" in constructed("overcautious", gold, gold, rng)
-    # guessed: the lost word's 〈?〉 becomes another word of the chunk
-    lost_in, lost_gold = "Tbe q8xzw ⟨M1⟩ is goodd model.", "The 〈?〉 ⟨M1⟩ is good model."
-    lost = [{"word": "model", "garbage": "q8xzw"}]
-    g = constructed("guessed", lost_in, lost_gold, rng, lost)
-    assert g == "The good ⟨M1⟩ is good model."
-    assert classify(lost_in, lost_gold, g, MAP) == "guessed"
-    assert constructed("guessed", inp, gold, rng, []) is None
 
 
 def _write(path: Path, rows: list[dict]) -> Path:

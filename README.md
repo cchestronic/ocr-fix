@@ -202,7 +202,7 @@ Each step has one file, `configs/stages/<step>.yaml`; the machine has one file,
 | `stages/gold.yaml` | gold split (eval / dpo shares), error-table options |
 | `stages/corrupt.yaml` | the damage generator |
 | `stages/calibrate.yaml` | allowed false flags; the whole-chunk limit's margin over real gold text (`noise_chunk.margin`, 1.0 bits/char); how much real text noise removal may delete (1 in 10,000) |
-| `stages/sft.yaml` | SFT data mix, junk, lost words (`sft.lost.prob`, off), gold repeats; lr, epochs, LoRA, batch |
+| `stages/sft.yaml` | SFT data mix, junk, gold repeats; lr, epochs, LoRA, batch |
 | `stages/dpo.yaml` | DPO sampling and pair types; beta, lr, epochs, reference |
 | `stages/correct.yaml` | the correction model (`correct.model`), which languages to correct (`langs`), vLLM or transformers, decoding, the checks and the re-score rule |
 | `stages/eval.yaml` | eval options |
@@ -229,7 +229,6 @@ Each step has one file, `configs/stages/<step>.yaml`; the machine has one file,
 | `chunk` / `reconstruct` | byte-exact on 50 MB |
 | SFT on the 4B (QLoRA, 1 epoch, 64 min) | document CER 0.58% → 0.13% (flagged chunks), 0.01% (`--all`); base model 0.23% |
 | DPO | runs; on test data the SFT model was right on 1,299 of 1,300 new prompts, so DPO had nothing to learn |
-| `〈?〉` for destroyed words | the model marked 63% of them instead of guessing (old model: guessed 97%). **Off by default** (`sft.lost.prob: 0`): a marked sentence would have to be dropped from training text |
 | noise removal (`calibrate-noise`, 697 test gold chunks) | at most 1 in 10,000 real characters removed: 60% of inserted junk found, 0.0096% of real text removed (the hand-set values: 72%, 0.024%) |
 | whole-chunk noise (4B; limits from synthetic data en 3.9 / ko 5.1 / mixed 4.2, from the test gold en 2.0 / ko 4.6 / mixed 2.6 bits per char) | 0 of 13,614 test OCR chunks dropped (highest bpc 3.5); 60 of 60 all-garbage chunks dropped; 60 of 60 half-garbage chunks kept (word-level removal cleaned them) |
 | vLLM vs transformers (`compare`) | flags agree on 99.6% of chunks, greedy answers identical on 100% |
@@ -246,7 +245,7 @@ ruff check . && ruff format --check .
 ```
 
 `make_test_corpus.py` writes `ocr/` (with injected errors), `truth/` (the answer key), `clean/`
-and `ocr_errors.jsonl`. With `--lost-words 0.003`, `ocr/` + `truth/` work as a gold set
+and `ocr_errors.jsonl`. `ocr/` + `truth/` work as a gold set
 (`mkdir -p data/test/gold && ln -s ../ocr data/test/gold/ocr && ln -s ../truth data/test/gold/truth`).
 
 ## Layout

@@ -7,9 +7,7 @@ dpo:                                  # `ocrfix data dpo` (stages/dpo.py); promp
   temperature: 0.8
   top_p: 0.95
   max_pairs: 2                        # rejected answers per prompt (greedy first, then near misses)
-  constructed: [unchanged, half_fixed, placeholder_dropped, guessed, overcautious]
-                                      # off-policy kinds, in turn (a prompt with a lost word
-                                      # tries guessed first)
+  constructed: [unchanged, half_fixed, placeholder_dropped]   # off-policy kinds, in turn
   constructed_share: 0.25             # of prompts the model always got right: one constructed pair
   max_prompts: {synthetic: null, gold: null, identity: null}   # per source; null = all
 

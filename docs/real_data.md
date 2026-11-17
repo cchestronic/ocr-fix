@@ -19,7 +19,7 @@ data/real/
 ```
 
 - **Gold:** pairs of `.md` files; how to correct them is in
-  [annotation_guideline.md](annotation_guideline.md). Lost words are `〈?〉`.
+  [annotation_guideline.md](annotation_guideline.md).
   - **Size:** 5,000 chunks is about 10M characters. Many short documents of different types
     is best.
 - **Clean:** as much as you have, ideally 50–100 MB. It must not be copies of gold documents,
@@ -97,7 +97,7 @@ ocrfix calibrate data/real/calib/clean_scored data/real/calib/corrupt_scored dat
 
 - **`calibrate-noise`** scores the OCR side of the gold (sft/ and dpo/ only) plus a copy of
   each chunk with junk inserted (runs of 20–60 characters). The inserted junk is the noise to find; everything the truth
-  keeps (corrected words and `〈?〉` words included) is real text; what the annotators deleted
+  keeps (corrected words included) is real text; what the annotators deleted
   (page numbers, footers) counts neither way. It tries `min_chars` 20 and up only (long
   runs), and picks the `core` / `extend` that find the most junk while removing at most 1 in
   10,000 real characters (`calibrate.noise.max_text_removed`). It writes them into
@@ -128,8 +128,7 @@ ocrfix data sft data/real/sft \
 ```
 
 - **Mix** (`sft.mix`):
-  - synthetic 60%: clean chunks damaged at the gold rates. 30% of them also get junk, and 10%
-    get 1–2 lost words answered with `〈?〉`.
+  - synthetic 60%: clean chunks damaged at the gold rates. 30% of them also get junk.
   - gold 20%: each gold chunk twice (`sft.gold_repeats`).
   - identity 20%: clean chunks returned unchanged.
 - **Size:** the total is the most the mix allows without reusing anything. Cap it with
@@ -160,9 +159,7 @@ ocrfix data dpo data/real/dpo/pairs.jsonl \
 
 - **What happens:** the SFT model answers every prompt once greedily and 4 times sampled.
   Every answer that isn't the right one becomes a pair, typed:
-  - `missed`, `false_fix`, `wrong_fix`, `mixed`, `placeholders`;
-  - `guessed`: a word where `〈?〉` belongs;
-  - `overcautious`: `〈?〉` where a fix was possible.
+  `missed`, `false_fix`, `wrong_fix`, `mixed`, `placeholders`, `truncated`.
 - **Check `pairs.stats.json`:**
   - You want several thousand pairs, most of them `greedy:` or `sampled:` (the model's own
     mistakes).
@@ -202,8 +199,6 @@ ocrfix eval data/real/gold/truth \
   - **CER, WER and SER**, overall and per language.
   - **False fixes:** edits where the truth has none.
   - **Recall per error type:** the same types as `errors table`.
-  - **`〈?〉` per lost word:** marked (`〈?〉`, right), left (garbage kept), invented (a word
-    written: the worst). Plus `false 〈?〉`: `〈?〉` where the truth has a word.
   - **Paired Wilcoxon tests** between systems.
 - **Pick the corrector and the mode:**
   - correct only flagged chunks, or every chunk with `--all`;

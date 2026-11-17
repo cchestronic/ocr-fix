@@ -30,7 +30,7 @@ gold/
 > **Truth = what the PDF says, character for character, minus what OCR broke.**
 
 If you're not sure whether something is an OCR error or is really printed in the PDF, the PDF
-decides. If you can't tell what the word is, write `〈?〉` (see below). Never guess.
+decides. If you can't tell what a destroyed word is, leave the OCR text as it is (see below).
 
 ## Fix
 
@@ -65,27 +65,16 @@ decides. If you can't tell what the word is, write `〈?〉` (see below). Never 
 - **Markdown structure stays as it is:** `#` headings, list markers, `**bold**`.
 - **No translation, no added text, no completing cut-off sentences.**
 
-## 〈?〉: lost text
+## Destroyed words
 
-Write `〈?〉` (U+3008, `?`, U+3009; copy it from here) in place of text that you can't get back
-from the OCR text:
+A word OCR destroyed beyond recognition (`효과적으로` came out as `흐괴ㅈ젹ㅇ□`, `training` as
+`STJBT8RBY`):
 
-- **The OCR text keeps nothing of the word,** even if you can read it in the PDF. Example:
-  `효과적으로` came out as `흐괴ㅈ젹ㅇ□`, `training` as `STJBT8RBY`.
-- **The PDF itself is unreadable** there (blur, a stain, a cut-off edge).
-
-How to write it:
-
-- **One `〈?〉` per stretch:** use the smallest stretch, but only one mark for it, whatever its
-  length. `3〈?〉0 ℃` is one unreadable digit; a lost clause is also one `〈?〉`.
-- **Fixable damage is not `〈?〉`.** If one or two characters are wrong and the word is clear,
-  fix it (`방볍`→`방법`, `Tab1e`→`Table`).
-- **Never write a plausible word** where the OCR text has nothing. The model learns from this
-  file, so a guess here teaches it to invent text.
-- **Don't write `<?>`.** It occurs in real text (Java `List<?>`, `<?xml`).
-
-Why `〈?〉` even when the PDF is readable: the model sees only the OCR text, never the PDF, so
-`〈?〉` is the only honest answer it can give there.
+- **The context makes it clear:** write the most likely word.
+- **Otherwise:** leave the OCR text as it is. Don't invent text; the model learns from this
+  file, so a guess here teaches it to invent.
+- **Fixable damage:** if one or two characters are wrong and the word is clear, fix it
+  (`방볍`→`방법`, `Tab1e`→`Table`).
 
 ## Checks (`ocrfix gold chunks`)
 
@@ -109,12 +98,12 @@ ocr:    실험 걸과는 표 2에 나타 내었으며, 졍확도는 기존 방�
 truth:  실험 결과는 표 2에 나타내었으며, 정확도는 기존 방법보다 높았다.
 ```
 
-**KO, lost word:**
+**KO, destroyed word, context unclear:**
 ```
 ocr:    제안한 방법은 실험에서 흐괴ㅈ젹ㅇ□ 동작하였다.
-truth:  제안한 방법은 실험에서 〈?〉 동작하였다.
+truth:  제안한 방법은 실험에서 흐괴ㅈ젹ㅇ□ 동작하였다.
 ```
-The PDF shows `효과적으로`, but nothing of it is left in the OCR text, so the truth has `〈?〉`.
+The PDF shows `효과적으로`, but the context doesn't make the word clear, so the OCR text stays.
 
 **KO, the PDF's own spelling (don't fix):**
 ```

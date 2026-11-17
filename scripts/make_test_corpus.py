@@ -8,11 +8,7 @@ Writes, deterministically for a seed:
   <out>/ocr/     the same documents with OCR errors injected (same relative paths)
   <out>/clean/   other documents, error-free (for SFT data; never the test documents)
   <out>/ocr_errors.jsonl   per document: counts of each injected error type, the exact
-                           noise strings inserted (random symbols / junk to be removed), and
-                           with --lost-words the lost words ({start, end, word, garbage},
-                           offsets into the document before 〈?〉 replaced them): words OCR
-                           destroyed beyond recovery; truth/ has 〈?〉 there, the answer a
-                           hand-corrected truth file gives (score with `ocrfix eval`)
+                           noise strings inserted (random symbols / junk to be removed)
 
 The text is assembled from sentence templates and a vocabulary, so it is fluent enough for a
 language model to score but repetitive compared with real papers. Use it to test plumbing and
@@ -386,46 +382,6 @@ def add_noise(text: str, r: random.Random) -> tuple[str, list[str]]:
     return "".join(out), [s.strip() for _, s in sorted(inserts)]
 
 
-# --- lost words (destroyed beyond recovery: the right answer is 〈?〉) -------------------------
-
-# not the alphabets of stages/data.py's garble(): a model trained on those meets new garbage
-LOST_WORD = re.compile(r"(?<![\w-])(?:[가-힣]{2,8}|[A-Za-z]{4,})(?![\w-])")
-JAMO = "ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎㅏㅑㅓㅕㅗㅛㅜㅠㅡㅣ"
-LATIN_GARBLE = "ABCDEFGHJKMNPQRSTUVWXYZbdfghjkpqtxyz024689"
-
-
-def lost_garbage(word: str, r: random.Random) -> str:
-    n = max(1, len(word) + r.randint(-1, 1))
-    kind = r.random()
-    if kind < 0.2:
-        return "".join(r.choice("▢▣◘") for _ in range(n))
-    if kind < 0.35:
-        return "".join(r.choice(SYMBOLS) for _ in range(min(n, 3)))
-    if "가" <= word[0] <= "힣":
-        if kind < 0.7:  # loose jamo
-            return "".join(r.choice(JAMO) for _ in range(n + 1))
-        return "".join(chr(r.randint(0xAC00, 0xD7A3)) for _ in range(n))
-    return "".join(r.choice(LATIN_GARBLE) for _ in range(n))
-
-
-def add_lost(text: str, r: random.Random, share: float) -> tuple[str, list[dict]]:
-    """Replace ``share`` of the prose words (2+ syllables / 4+ letters) by garbage that holds
-    nothing of them; the log has offsets into ``text`` (the truth)."""
-    keep = [(m.start(), m.end()) for m in MASKED.finditer(text)]
-    lost, out, pos = [], [], 0
-    for m in LOST_WORD.finditer(text):
-        if r.random() >= share or m.start() < pos + 2:
-            continue
-        if any(a <= m.start() < b or a < m.end() <= b for a, b in keep):
-            continue
-        junk = lost_garbage(m.group(), r)
-        lost.append({"start": m.start(), "end": m.end(), "word": m.group(), "garbage": junk})
-        out += [text[pos : m.start()], junk]
-        pos = m.end()
-    out.append(text[pos:])
-    return "".join(out), lost
-
-
 # --- main ------------------------------------------------------------------------------------
 
 
@@ -448,9 +404,6 @@ def main() -> None:
     ap.add_argument("--error-rate", type=float, default=0.03, help="share of words damaged")
     ap.add_argument("--noise-docs", type=float, default=0.3,
                     help="share of test documents that also get random noise")  # fmt: skip
-    ap.add_argument("--lost-words", type=float, default=0.0,
-                    help="share of prose words in test documents destroyed beyond recovery "
-                         "(right answer 〈?〉); 0 leaves the output as before")  # fmt: skip
     ap.add_argument("--seed", type=int, default=1)
     a = ap.parse_args()
     for sub in ("truth", "ocr", "clean"):
@@ -465,19 +418,8 @@ def main() -> None:
         for rel, doc in write_tree(a.out, r, a.ocr_mb, "doc"):
             # the rate varies per document: some are clean, some heavily damaged
             rate = a.error_rate * r.choice([0, 0.5, 1, 1, 2, 4])
-            lost: list[dict] = []
-            noisy = doc
-            if a.lost_words > 0:  # own stream (later documents still change: corrupt sees garbage)
-                noisy, lost = add_lost(doc, random.Random(f"{a.seed}:lost:{rel}"), a.lost_words)
-            noisy, kinds = corrupt(noisy, r, rate)
+            noisy, kinds = corrupt(doc, r, rate)
             truth = doc
-            if lost:  # the truth has 〈?〉 where OCR left nothing, as a hand truth file would
-                kinds["lost_word"] += len(lost)
-                parts, pos = [], 0
-                for x in lost:
-                    parts += [doc[pos : x["start"]], "〈?〉"]
-                    pos = x["end"]
-                truth = "".join(parts) + doc[pos:]
             noise: list[str] = []
             if r.random() < a.noise_docs:
                 noisy, noise = add_noise(noisy, r)
@@ -487,8 +429,6 @@ def main() -> None:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(text, encoding="utf-8")
             row = {"path": rel.as_posix(), "rate": rate, "errors": kinds, "noise": noise}
-            if lost:
-                row["lost"] = lost
             log.write(json.dumps(row, ensure_ascii=False) + "\n")
             total += kinds
             n += 1

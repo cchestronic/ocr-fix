@@ -7,9 +7,7 @@ import math
 import re
 from typing import Any
 
-from ocrfix.schema import UNCERTAIN
-
-SYSTEM = f"""You correct OCR errors in a passage from a scientific document (Korean and English).
+SYSTEM = """You correct OCR errors in a passage from a scientific document (Korean and English).
 
 Rules:
 - Output the passage as printed in the original document. Fix only OCR damage: misrecognized
@@ -20,7 +18,6 @@ Rules:
 - Keep the paragraph structure: blank lines between paragraphs stay where they are.
 - Placeholders ⟨M1⟩ ⟨T1⟩ ⟨P1⟩ ... stand for math, tables and protected text. Copy every
   placeholder exactly once, unchanged and in the same order.
-- Where the text is unreadable and you cannot decide, write {UNCERTAIN}. Never guess.
 - Output only the corrected passage, nothing else."""
 
 _THINK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)

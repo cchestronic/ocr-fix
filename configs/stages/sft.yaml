@@ -17,11 +17,6 @@ sft:                                  # `ocrfix data sft` (stages/data.py)
     max_runs: 3                       # 1..max_runs per chunk
     chars: [3, 30]                    # non-space chars per run (noise removal takes >= 20 only)
     own_line: 0.2                     # share of runs inserted as their own paragraph
-  lost:                               # words destroyed beyond recovery: garbage in, 〈?〉 out
-    prob: 0                           # share of synthetic chunks that get lost words; 0 = off
-                                      # (the model then guesses destroyed words; 0.1 teaches 〈?〉)
-    max_runs: 2                       # 1..max_runs lost stretches per chunk
-    two_words: 0.2                    # share of stretches that cover two adjacent words
 
 train:                                # `ocrfix train sft|dpo|merge`
   effective_batch: 32                 # sequences per optimizer step; grad accumulation derived

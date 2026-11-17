@@ -1,0 +1,38 @@
+# A Windows/Linux machine without a GPU: the CPU steps (chunk, gold chunks, errors table,
+# corrupt, data sft, calibrate, bpc-hist, eval, report, reconstruct) and the tests.
+# Steps that need the model's forward pass (score, correct, calibrate-noise, data dpo) run
+# here only with score.backend=transformers / correct.backend=transformers, and very slowly.
+model: ../Qwen3.5-4B   # D:\cch\Qwen3.5-4B (relative = current folder, then the project root)
+
+hw:
+  name: cpu
+  n_gpus: 0
+  dtype: float32                      # bf16 matmuls are slow or missing on most CPUs
+  attn_impl: sdpa
+  vllm_attention_backend: FLASHINFER  # unused: vLLM is not installed here
+
+  train:                              # not for training: kept so the config loads
+    mode: lora
+    per_device_batch_size: 1
+    max_seq_len: 2048
+    gradient_checkpointing: false
+    optim: adamw_torch
+    packing: false
+    distributed: none
+
+  infer:                              # unused unless a vLLM server elsewhere is given in score_urls
+    engines: 0                        # no GPU, no local vLLM engines
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.90
+    max_model_len: 4096
+    max_num_seqs: 8
+    host: 127.0.0.1
+    base_port: 8100
+    correct_port: 8101
+    concurrency: 4
+    score_urls: null
+    correct_urls: null
+
+  scorer:
+    max_batch_tokens: 2048
+    logits_chunk: 512

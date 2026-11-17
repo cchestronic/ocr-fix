@@ -7,8 +7,8 @@ the OCR side of the gold chunks (`gold chunks` sft/ and dpo/; never eval/), whic
 errors next to real junk, with the truth saying which is which:
 
 1. **Label** each character of the masked OCR text by aligning it with the truth:
-     text     what the truth keeps: as is, corrected (an OCR-damaged word must be corrected,
-              not deleted) or replaced by 〈?〉 (the model must write 〈?〉 there);
+     text     what the truth keeps: as is or corrected (an OCR-damaged word must be
+              corrected, not deleted);
      deleted  an alignment region (adjacent edits merged) whose truth side has no letter or
               digit: the annotator deleted it (page numbers, headers, junk). Ignored: removing
               it can't hurt, and it isn't counted as noise either.
@@ -46,7 +46,6 @@ from omegaconf import OmegaConf
 from rapidfuzz.distance import Levenshtein
 
 from ocrfix.io import iter_jsonl
-from ocrfix.schema import UNCERTAIN
 from ocrfix.stages.noise import COLD, HOT, STOP, WARM, char_bits, word_values
 from ocrfix.stages.run import Context
 from ocrfix.stages.score import tokenize_chunk
@@ -84,7 +83,7 @@ def junk(rng: random.Random, lo: int, hi: int) -> str:
 
 def noise_labels(ocr: str, gold: str) -> np.ndarray:
     """REAL for OCR chars the annotator deleted (alignment regions, adjacent edits merged,
-    whose truth side has no letter or digit and no 〈?〉), else 0."""
+    whose truth side has no letter or digit), else 0."""
     lab = np.zeros(len(ocr), dtype=np.int8)
     region: list[int] | None = None
     for o in [*Levenshtein.opcodes(ocr, gold), None]:
@@ -97,7 +96,7 @@ def noise_labels(ocr: str, gold: str) -> np.ndarray:
         if region is not None:
             a, b, c, d = region
             g = gold[c:d]
-            if b > a and not _LETTER.search(g) and UNCERTAIN not in g:
+            if b > a and not _LETTER.search(g):
                 lab[a:b] = REAL
             region = None
     return lab

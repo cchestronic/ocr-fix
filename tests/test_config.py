@@ -32,7 +32,7 @@ def test_every_stage_file_loads_and_overrides_work():
     assert len(load_base()) == len(stages) + 1
     cfg = load_config("rtx5090", ["train.dpo.beta=0.2", "correct.checks.min_bpc_gain=0.05"])
     assert cfg.train.dpo.beta == 0.2 and cfg.correct.checks.min_bpc_gain == 0.05
-    assert cfg.train.lr == 1.0e-4 and cfg.sft.lost.prob == 0
+    assert cfg.train.lr == 1.0e-4 and "lost" not in cfg.sft
     # each step's file holds the section of its name (sft/dpo also hold their `train` part)
     for p in stages:
         assert p.stem in __import__("yaml").safe_load(p.read_text())

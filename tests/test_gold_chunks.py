@@ -50,7 +50,7 @@ def _damage(text: str) -> str:
 
 
 def _truth(text: str) -> str:
-    return text.replace("resolution", "〈?〉")
+    return text
 
 
 @pytest.fixture
@@ -108,7 +108,7 @@ def test_gold_chunks_end_to_end(tmp_path, gold, chunk_cfg):  # noqa: F811
         assert rebuilt == docs[path]
         for c in cs:
             assert "charactor" not in c["gold_text"] and "qzxvw" not in c["gold_text"]
-            assert c["gold_text"].count("〈?〉") == c["source_text"].count("qzxvw")
+            assert c["gold_text"].count("resolution") == c["source_text"].count("qzxvw")
 
     # a rerun with other shares keeps every document on its side
     cfg2 = chunk_cfg("gold.chunks.split.eval=0.6", "gold.chunks.split.dpo=0.1")
@@ -133,18 +133,16 @@ def test_eval_documents(tmp_path, gold, chunk_cfg):  # noqa: F811
     rows = [r for r in rows if r["source_path"] != "v1/d7.md"]
     perfect = _system(tmp_path, "perfect", rows, lambda r: r["gold_text"])
     guess = _system(tmp_path, "guess", rows,
-                    lambda r: r["gold_text"].replace("〈?〉", "accuracy"))  # fmt: skip
+                    lambda r: r["gold_text"].replace("resolution", "accuracy"))  # fmt: skip
     over = _system(tmp_path, "over", rows,
-                   lambda r: r["gold_text"].replace("method", "〈?〉"))  # fmt: skip
+                   lambda r: r["gold_text"].replace("method", "methd"))  # fmt: skip
     res = run_eval(root / "truth", [perfect, guess, over], tmp_path / "ev", opts=OPTS)
     m = {k: v["all"] for k, v in res["metrics"].items()}
     assert res["docs"] == 7
-    assert m["ocr"]["cer"] > 0 and m["ocr"]["uncertain"]["left"] == 1.0
-    assert m["ocr"]["recall"]["unrecoverable"] == 0
-    assert m["perfect"]["cer"] == 0 and m["perfect"]["uncertain"]["marked"] == 1.0
-    assert m["perfect"]["false_fix_rate"] == 0 and m["perfect"]["false_uncertain"] == 0
-    assert m["guess"]["uncertain"]["invented"] == 1.0
-    assert m["over"]["false_uncertain"] > 0 and m["over"]["false_fix_rate"] > 0
+    assert m["ocr"]["cer"] > 0
+    assert m["perfect"]["cer"] == 0 and m["perfect"]["false_fix_rate"] == 0
+    assert 0 < m["guess"]["cer"] < m["ocr"]["cer"]
+    assert m["over"]["false_fix_rate"] > 0
     assert (tmp_path / "ev" / "report.md").read_text().startswith("# Eval: 7 documents")
     names = {(c["a"], c["b"]) for c in res["comparisons"]}
     assert ("ocr", "perfect") in names and len(names) == 6
