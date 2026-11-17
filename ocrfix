@@ -1,0 +1,6 @@
+#!/bin/sh
+# ocrfix launcher for Linux / macOS (and Git Bash on Windows): ./ocrfix <command> ...
+here="$(cd "$(dirname "$0")" && pwd)"
+py="$here/.venv/bin/python"
+[ -x "$py" ] || py="$here/.venv/Scripts/python.exe"
+exec "$py" "$here/run.py" "$@"

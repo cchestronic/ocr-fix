@@ -28,7 +28,7 @@ def test_every_stage_file_loads_and_overrides_work():
     stages = sorted((config_dir() / "stages").glob("*.yaml"))
     names = {p.stem for p in stages}
     assert names == {"chunk", "score", "gold", "corrupt", "calibrate", "sft", "dpo", "correct",
-                     "eval", "reconstruct"}  # fmt: skip
+                     "eval", "reconstruct", "markup"}  # fmt: skip
     assert len(load_base()) == len(stages) + 1
     cfg = load_config("rtx5090", ["train.dpo.beta=0.2", "correct.checks.min_bpc_gain=0.05"])
     assert cfg.train.dpo.beta == 0.2 and cfg.correct.checks.min_bpc_gain == 0.05

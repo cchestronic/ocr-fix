@@ -1,0 +1,13 @@
+# `ocrfix markup`: rule-based repair of MinerU's LaTeX and tables, on the CPU, before `chunk`
+# (src/ocrfix/markup/). Reads the files `chunk.glob` matches; writes a fixed copy of the tree.
+
+markup:
+  workers: null                       # processes; null = every CPU core; 0 = in-process
+  latex:
+    delimiters: true                  # close $$ / \[ / \( / \begin{env} left open; $ x $ -> $x$
+    formulas: true                    # inside each formula: braces, \left/\right, inner envs
+    spacing: true                     # x _ { i } -> x_{i} (never inside \text{..})
+    normalize_delimiters: true        # \(..\) -> $..$, \[..\] -> $$..$$
+  tables:
+    html: true                        # close tags, pad short rows, drop empty rows
+    markdown: true                    # separator line, pad / trim rows

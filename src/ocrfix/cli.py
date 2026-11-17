@@ -35,6 +35,39 @@ def _load(profile: str | None, overrides: list[str] | None):
         raise typer.BadParameter(str(e)) from None
 
 
+@app.command("markup")
+def markup_cmd(
+    input_dir: Annotated[Path, typer.Argument(exists=True, file_okay=False, help="Markdown tree.")],
+    out_dir: Annotated[Path, typer.Argument(file_okay=False, help="Fixed copy of the tree.")],
+    limit: Annotated[int | None, typer.Option(help="At most N documents.")] = None,
+    workers: Annotated[
+        int | None, typer.Option(help="Processes [markup.workers, else all cores]; 0 = in-process.")
+    ] = None,
+    profile: ProfileOpt = None,
+    overrides: SetOpt = None,
+) -> None:
+    """Repair MinerU's LaTeX and tables (rule-based, CPU) into a new folder, before `chunk`."""
+    from ocrfix.markup.run import run_markup
+
+    cfg = _load(profile, overrides)
+    try:
+        st = run_markup(cfg, input_dir, out_dir, workers=workers, limit=limit)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from None
+    typer.echo(
+        f"{out_dir}: {st.docs} docs ({st.skipped} already done), {st.changed} changed, "
+        f"{st.with_issues} with issues left "
+        f"({st.bytes / 1e6:.1f} MB in {st.seconds:.1f}s)"
+    )
+    for k, v in st.fixes.most_common():
+        typer.echo(f"  fix   {k:<32} {v}")
+    for k, v in st.issues.most_common():
+        typer.echo(f"  issue {k:<32} {v}")
+    if st.not_utf8:
+        typer.echo(f"  not UTF-8 (copied as is): {len(st.not_utf8)}", err=True)
+    typer.echo(f"  details: {out_dir / 'markup_report.jsonl'}")
+
+
 @app.command("chunk")
 def chunk_cmd(
     input_dir: Annotated[Path, typer.Argument(exists=True, file_okay=False, help="Markdown tree.")],

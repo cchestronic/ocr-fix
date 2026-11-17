@@ -17,6 +17,8 @@ sample/import) was removed on 2026-11-13; a copy is in `backups/before_paragraph
 ## Layout
 
 ```
+ocrfix, ocrfix.cmd             launchers (Linux / Windows): `./ocrfix <command>` = .venv's Python + run.py
+run.py                         UTF-8 mode, profile = --profile / $OCRFIX_PROFILE / cpu (printed), then cli.app
 configs/default.yaml           shared: seed, work_dir, lang (and `model: ???`, `hw: ???` for the profile)
 configs/stages/*.yaml          one file per step, one section of the same name (see Config)
 configs/profiles/*.yaml        per machine: `model` + `hw` only (rtx5090, h200x4, h200x8); cluster.yaml.example
@@ -100,6 +102,42 @@ takes `--profile NAME` and `--set key=value` (repeatable); most take `--limit N`
 - **Scripts are Python:** `scripts/make_wheelhouse.py`, `install_offline.py`,
   `build_causal_conv1d.py` (stdlib only), `make_test_corpus.py`. `ocrfix train` re-execs under
   torchrun when `hw.n_gpus > 1` and sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+
+## Markup (`src/ocrfix/markup/`)
+
+**`ocrfix markup <input_dir> <out_dir> [--limit N] [--workers N]`**: rule-based, CPU-only
+repair of MinerU's LaTeX and tables, run on the corpus before `chunk` (`configs/stages/markup.yaml`
+toggles each part). Writes the same tree into `out_dir` (never in place; unchanged files byte
+for byte, BOM and CRLF kept, non-UTF-8 copied and listed), `markup_report.jsonl` (changed or
+flagged docs: fix counts, issues with a snippet) and `markup_stats.json`.
+- **Never worse than the input:** each repaired formula / table is checked before use
+  (`latex.check_formula`, `tables._check_table`): the tagger must find exactly one whole math /
+  table span, braces must balance, and no text may be lost (only spaces, env names of a renamed
+  `\end`, and the stray `}` the repair dropped). Otherwise the original is kept byte for byte,
+  counted as `latex.kept_original` / `table.kept_original` and reported with a reason.
+- **Big corpora:** one process per core (`markup.workers`), files handed out in batches;
+  resumable (an existing output file is complete, so a rerun skips it and appends to the
+  report; delete `out_dir` to redo). Test corpus, 12 cores: 10 MB in 2.5 s with 1 process,
+  1.1 s with 12 (mostly start-up at that size).
+- **Order** (`run.fix_document`): HTML tables, pipe tables, math delimiters outside tables,
+  then each math span the tagger finds; finally an unclosed `<table>` or a `$` left in prose is
+  reported.
+- **Tables** (`tables.py`): HTML rebuilt from its tags (missing `</td> </tr> </table>`, cells
+  outside rows), short rows padded (colspan/rowspan counted), empty rows dropped, wider rows
+  reported, nested tables left alone; pipe tables get a missing/malformed `|---|` line and
+  rows padded or trimmed (only empty extra cells); `|` in `$..$`, code or `\|` never splits.
+- **Delimiters** (`latex.repair_delimiters`): top-level `\begin{env}` closed at its paragraph
+  end, a mismatched `\end` renamed; `$$` / `\[` left open closed at the paragraph end, `\(` at
+  the line end, only when the rest looks like math (no Hangul, some LaTeX: `looks_math`);
+  `$ x $` tightened when the content looks like math; orphan closers only reported.
+- **Formulas** (`latex.fix_formula`): inner envs, `\left`/`\right` (`\left.`/`\right.`) and
+  braces balanced; spacing (`x _ { i }` -> `x_{i}`; spaces before `_ ^ { }` and after
+  `_ ^ {` dropped, never in `\text{..}`-like groups, never after a lone `\`); `\(..\)` ->
+  `$..$`, `\[..\]` -> `$$..$$`.
+- **Measured** (scratch test, 20 test-corpus docs with injected MinerU-style damage: 791
+  spaced formulas, 18 dropped braces, 28 lost `\end`, 40 lost `</td>`, 23 lost `</table>`,
+  28 lost `|---|`): math spans tagged 2,893 / damaged 2,846 / fixed 2,893, tables 166 / 79 /
+  166; on the clean corpus 0 of 167 docs changed.
 
 ## Chunk (`src/ocrfix/chunks/`)
 
