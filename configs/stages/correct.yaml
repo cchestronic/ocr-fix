@@ -6,7 +6,8 @@
 correct:
   model: null                         # a merged model dir (`train merge` output); null = the base
   adapter: null                       # or a LoRA adapter dir, served on top of the base
-  backend: vllm                       # vllm (the servers) | transformers (this process)
+  backend: auto                       # auto: vllm if the profile has servers (engines > 0 or urls),
+                                      # else transformers | vllm (the servers) | transformers
   langs: [ko, en, mixed]              # chunk languages to correct; cjk (Chinese / Japanese) and
                                       # other chunks pass through unchanged
   hf:                                 # backend: transformers

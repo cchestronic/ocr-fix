@@ -35,6 +35,34 @@ def _load(profile: str | None, overrides: list[str] | None):
         raise typer.BadParameter(str(e)) from None
 
 
+@app.command("pipeline")
+def pipeline_cmd(
+    stage: Annotated[
+        str, typer.Argument(help="prepare | calibrate | train | corpus | all (README section 5).")
+    ],
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the steps and which are done; run nothing.")
+    ] = False,
+    redo: Annotated[
+        bool, typer.Option("--redo", help="Run steps again even when their output exists.")
+    ] = False,
+    start: Annotated[
+        int, typer.Option("--from", help="Start at step N (numbering as in --dry-run).")
+    ] = 1,
+    profile: ProfileOpt = None,
+    overrides: SetOpt = None,
+) -> None:
+    """Run a whole stage with default settings: every step, servers started and stopped."""
+    from ocrfix.pipeline import STAGES, run_pipeline
+
+    if stage not in (*STAGES, "all"):
+        raise typer.BadParameter(f"stage must be one of {', '.join(STAGES)}, all")
+    cfg = _load(profile, overrides)
+    rc = run_pipeline(stage, cfg, profile=profile, user_sets=list(overrides or []),
+                      dry_run=dry_run, redo=redo, start=start)  # fmt: skip
+    raise typer.Exit(rc)
+
+
 @app.command("markup")
 def markup_cmd(
     input_dir: Annotated[Path, typer.Argument(exists=True, file_okay=False, help="Markdown tree.")],
@@ -519,7 +547,11 @@ def calibrate_cmd(
     out_dir: Annotated[Path, typer.Argument(file_okay=False, help="Output directory.")],
     gold_scores: Annotated[
         Path | None,
-        typer.Option(exists=True, help="Scores of gold source paragraphs (`gold records`)."),
+        typer.Option(
+            exists=True,
+            help="`score` output of `gold chunks` sft/ (+ dpo/), noise removal off: check the "
+            "rules on real OCR chunks.",
+        ),
     ] = None,
     limit: Annotated[int | None, typer.Option(help="Read only the first N rows of each.")] = None,
     profile: ProfileOpt = None,
@@ -530,9 +562,12 @@ def calibrate_cmd(
     from ocrfix.calibrate.run import run_calibrate
 
     cfg = _load(profile, overrides)
-    cal, rep = run_calibrate(
-        cfg, clean_scores, corrupted_scores, out_dir, gold_scores, limit=limit, plots=plots
-    )
+    try:
+        cal, rep = run_calibrate(
+            cfg, clean_scores, corrupted_scores, out_dir, gold_scores, limit=limit, plots=plots
+        )
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from None
     typer.echo(f"{out_dir / 'calibration.yaml'}: tau={cal.tau:g} ({cal.variant})")
     for lang, r in cal.rules.items():
         parts = [
@@ -547,7 +582,14 @@ def calibrate_cmd(
         )  # fmt: skip
     if rep.gold:
         g = rep.gold["*"]
-        typer.echo(f"  gold: precision {g['precision']}, recall {g['recall']} (n={g['n']})")
+        typer.echo(
+            f"  gold (real OCR): precision {g['precision']}, recall {g['recall']}, "
+            f"false flag {g['false_flag']} (n={g['n']}, damaged {g['n_noisy']})"
+        )
+        for k, v in rep.gold_bands.items():
+            typer.echo(f"    cer {k:<12} n={v['n']:<5} flagged {v['flagged']}")
+        if any(rep.gold_skipped.values()):
+            typer.echo(f"    skipped: {rep.gold_skipped}")
 
 
 train_app = typer.Typer(no_args_is_help=True, help="Fine-tuning (TRL): SFT, DPO, adapter merge.")
@@ -753,9 +795,16 @@ def calibrate_noise_chunk_cmd(
 @app.command("bpc-hist")
 def bpc_hist_cmd(
     scored: Annotated[
-        list[Path], typer.Argument(exists=True, help="`score` output folder(s) or file(s).")
+        list[str],
+        typer.Argument(
+            help="`score` output folder(s) or file(s); or name=folder pairs to compare stages, "
+            "e.g. raw=data/real/scored_raw denoised=data/real/scored corrected=data/real/refined"
+        ),
     ],
     out: Annotated[Path, typer.Option(help="The PNG to write.")] = Path("bpc_hist.png"),
+    json_out: Annotated[
+        Path | None, typer.Option("--json", help="Stage comparison: also write the numbers here.")
+    ] = None,
     calibration: Annotated[
         Path | None,
         typer.Option(
@@ -765,11 +814,36 @@ def bpc_hist_cmd(
     profile: ProfileOpt = None,
     overrides: SetOpt = None,
 ) -> None:
-    """Histogram of chunk bpc per language from score output (no model): a PNG, plus a table."""
+    """Histogram of chunk bpc per language from score output (no model): a PNG, plus a table.
+    With name=folder pairs: the stages compared (mean, char-weighted mean, percentiles, noise
+    chunks per stage; histograms overlaid)."""
     from ocrfix.calibrate.noise_chunk import BIN, bpc_histograms, plot_bpc
     from ocrfix.calibrate.rules import load_calibration
 
     cfg = _load(profile, overrides or [])
+    if any("=" in a and not Path(a).exists() for a in scored):
+        from ocrfix.stages.bpc_stages import compare_stages, format_table, plot_stages
+
+        stages = []
+        for a in scored:
+            name, _, folder = a.partition("=")
+            if not folder or not Path(folder).exists():
+                raise typer.BadParameter(f"expected name=folder (an existing folder), got {a!r}")
+            stages.append((name, Path(folder)))
+        res = compare_stages(stages)
+        if not any(st.get("*", {}).get("chunks") for st in res.values()):
+            raise typer.BadParameter("no scored chunks with a bpc")
+        plot_stages(res, out)
+        for line in format_table(res):
+            typer.echo(line)
+        if json_out:
+            json_out.write_text(json.dumps(res, indent=1, ensure_ascii=False) + chr(10), "utf-8")
+        typer.echo(str(out))
+        return
+    missing = [a for a in scored if not Path(a).exists()]
+    if missing:
+        raise typer.BadParameter(f"not found: {missing}")
+    scored = [Path(a) for a in scored]
     cal_path = calibration or (Path(cfg.score.calibration) if cfg.score.calibration else None)
     limits = load_calibration(cal_path).noise_chunk if cal_path and cal_path.is_file() else {}
     hists = bpc_histograms(scored, limits)

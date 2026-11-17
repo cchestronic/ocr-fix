@@ -7,7 +7,10 @@ Inputs are `ocrfix score` outputs, or chunk shards from `ocrfix score` (features
   clean_scores       the clean paragraphs
   corrupted_scores   the same paragraphs corrupted, e.g. ``--rate 0.01``, ``0.03``, ``0.1``
                      and table-sampled rates, concatenated
-  gold_scores        optional: gold source paragraphs (``ocrfix gold records``) with ``cer``
+  gold_scores        optional: `score` output of `gold chunks` sft/ and/or dpo/ (scored with
+                     ``score.noise.remove=false``): real OCR chunks. Each chunk's error rate
+                     (cer) is computed from its ``source_text`` vs ``gold_text``; only
+                     ``gold_status: ok`` rows, never the eval split (skipped, counted)
 
 Steps:
   0. Rows with ``low_confidence`` (too few scored tokens) are left out: the rules never flag
@@ -19,7 +22,9 @@ Steps:
   3. Per language with enough rows, else ``*``: ``fit.fit_rule`` on the recall set
      (``calibrate.recall_on`` labels) under ``calibrate.max_false_flag``: the rule
      ``spike_frac > A or p90 > B or bpc > C``, any part possibly off.
-  4. With gold scores: precision / recall of the rules on real OCR source paragraphs.
+  4. With gold scores: precision / recall of the rules on real OCR chunks (damaged = cer above
+     ``calibrate.gold_noisy_cer``), and recall per damage band (``GOLD_BANDS``), which shows
+     whether the rules fitted on fake damage catch real damage.
 Writes calibration.yaml, report.json, summary.md and PNGs to ``out_dir``.
 """
 
@@ -35,6 +40,7 @@ import numpy as np
 
 from ocrfix.calibrate.fit import auroc, fit_rule, flags, precision_recall, spearman
 from ocrfix.calibrate.rules import Calibration, save_calibration
+from ocrfix.editdist import levenshtein
 from ocrfix.io import iter_jsonl
 from ocrfix.scorer.features import spike_key
 
@@ -43,6 +49,8 @@ log = logging.getLogger(__name__)
 ALL = "*"
 CLEAN = "clean"
 BASE_FEATURES = ("bpc", "p90", "p99", "spike_frac")
+# gold chunk damage bands (cer = char edits / gold chars) for the per-band recall
+GOLD_BANDS = ((0.0, 0.0), (0.0, 0.005), (0.005, 0.02), (0.02, 0.05), (0.05, float("inf")))
 
 
 @dataclass
@@ -54,6 +62,7 @@ class Scores:
     rate: np.ndarray
     cols: dict[str, np.ndarray]
     noisy: np.ndarray | None = None
+    cer: np.ndarray | None = None
 
     def __len__(self) -> int:
         return len(self.lang)
@@ -65,6 +74,7 @@ class Scores:
             self.rate[mask],
             {k: v[mask] for k, v in self.cols.items()},
             None if self.noisy is None else self.noisy[mask],
+            None if self.cer is None else self.cer[mask],
         )
 
     def col(self, name: str) -> np.ndarray:
@@ -89,12 +99,38 @@ def scores_from_rows(
         rate = np.array([_num(r.get("error_rate")) for r in rows])
     cols = {f: np.array([_num(r.get(f)) for r in rows]) for f in features}
     cols = {f: v for f, v in cols.items() if not np.isnan(v).all()}
-    noisy = None
+    noisy = cer = None
     if noisy_cer is not None:
-        noisy = np.array(
-            [_num(r["cer"]) > noisy_cer if "cer" in r else bool(r.get("noisy")) for r in rows]
+        cer = np.array([gold_cer(r) for r in rows])
+        noisy = cer > noisy_cer
+    return Scores(lang, labels, rate, cols, noisy, cer)
+
+
+def gold_cer(row: dict[str, Any]) -> float:
+    """A gold chunk's real error rate: char edits from its OCR text (``source_text``) to the
+    truth (``gold_text``) over the truth's length, both masked (placeholders count as equal
+    text). A ``cer`` already in the row wins."""
+    if row.get("cer") is not None:
+        return float(row["cer"])
+    src, gold = row.get("source_text"), row.get("gold_text")
+    if src is None or gold is None:
+        raise ValueError(
+            "gold scores need `gold chunks` rows (source_text + gold_text), scored with `score`"
         )
-    return Scores(lang, labels, rate, cols, noisy)
+    return levenshtein(src, gold) / max(1, len(gold))
+
+
+def gold_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Usable gold rows (``gold_status: ok``, not the eval split) and what was skipped."""
+    keep, skipped = [], {"eval_split": 0, "not_ok": 0}
+    for r in rows:
+        if r.get("split") == "eval":
+            skipped["eval_split"] += 1
+        elif r.get("gold_status", "ok") != "ok":
+            skipped["not_ok"] += 1
+        else:
+            keep.append(r)
+    return keep, skipped
 
 
 def flat_scores(row: dict[str, Any]) -> dict[str, Any]:
@@ -130,6 +166,8 @@ class Report:
     tau_auroc: dict[str, dict[str, float | None]] = field(default_factory=dict)
     recall_by_label: dict[str, dict[str, float]] = field(default_factory=dict)
     gold: dict[str, Any] | None = None
+    gold_bands: dict[str, dict[str, Any]] = field(default_factory=dict)  # recall per damage band
+    gold_skipped: dict[str, int] = field(default_factory=dict)  # eval split / not ok rows
     counts: dict[str, dict[str, int]] = field(default_factory=dict)
     recall_labels: list[str] = field(default_factory=list)  # corrupted labels recall is on
     noise_chunk: dict[str, dict[str, float | None]] = field(default_factory=dict)
@@ -245,6 +283,15 @@ def calibrate_scores(
                 auroc(gold.col(s_col)[m & ~gold.noisy], gold.col(s_col)[m & gold.noisy])
             )
             rep.gold[lang] = pr
+            if lang == ALL and gold.cer is not None:
+                rep.gold_bands = {}
+                for lo, hi in GOLD_BANDS:
+                    b = (gold.cer == 0) if hi == 0 else (gold.cer > lo) & (gold.cer <= hi)
+                    name = "0 (no edit)" if hi == 0 else f"{lo:g}-{hi:g}"
+                    rep.gold_bands[name] = {
+                        "n": int(b.sum()),
+                        "flagged": _r(float(f[b].mean())) if b.any() else None,
+                    }
     return cal, rep
 
 
@@ -278,10 +325,12 @@ def run_calibrate(
         scores_from_rows(rows(clean), feats, label=CLEAN), scores_from_rows(rows(corrupted), feats)
     )
     gold = None
+    gold_skipped: dict[str, int] = {}
     if gold_scores is not None:
-        gold = scores_from_rows(
-            rows(gold_scores), feats, label="gold", noisy_cer=float(c.gold_noisy_cer)
-        )
+        kept, gold_skipped = gold_rows(rows(gold_scores))
+        if not kept:
+            raise ValueError(f"no usable gold rows in {gold_scores} (skipped: {gold_skipped})")
+        gold = scores_from_rows(kept, feats, label="gold", noisy_cer=float(c.gold_noisy_cer))
     cal, rep = calibrate_scores(
         data,
         taus=taus,
@@ -294,6 +343,7 @@ def run_calibrate(
         gold=gold,
         noise_chunk_margin=float(c.noise_chunk.margin),
     )
+    rep.gold_skipped = gold_skipped
     write_outputs(cal, rep, data, out_dir, base_tau=base_tau, plots=plots)
     return cal, rep
 

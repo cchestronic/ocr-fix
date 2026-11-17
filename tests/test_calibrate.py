@@ -203,7 +203,7 @@ def test_gold_precision_recall_and_outputs(tmp_path):
     loaded = load_calibration(tmp_path / "calibration.yaml")
     assert loaded.tau == 12.0 and loaded.rules["en"].spike_frac == cal.rules["en"].spike_frac
     md = (tmp_path / "summary.md").read_text("utf-8")
-    assert "tau = **12**" in md and "Real gold source" in md and "![roc](roc.png)" in md
+    assert "tau = **12**" in md and "Real gold OCR chunks" in md and "![roc](roc.png)" in md
 
     # the rule as the scorer / verify apply it to one feature row
     r = loaded.rules["en"]
@@ -259,3 +259,57 @@ def test_noise_chunk_threshold_above_all_real_text(tmp_path):
     save_calibration(cal, tmp_path / "c.yaml")
     assert load_calibration(tmp_path / "c.yaml").noise_chunk == cal.noise_chunk
     assert run(data)[0].noise_chunk == {}
+
+
+def test_gold_chunk_rows_labelled_from_their_text():
+    from ocrfix.calibrate.run import gold_cer, gold_rows, scores_from_rows
+
+    base = {"lang": "en", "bpc": 1.0, "p90": 2.0, "p99": 3.0, "spike_frac": 0.0}
+    rows = [
+        base | {"source_text": "The model ⟨M1⟩ works.", "gold_text": "The model ⟨M1⟩ works."},
+        base | {"source_text": "Tbe modei ⟨M1⟩ works.", "gold_text": "The model ⟨M1⟩ works."},
+        base | {"source_text": "x", "gold_text": "y", "split": "eval"},
+        base | {"source_text": "x", "gold_text": None, "gold_status": "cut_in_edit"},
+    ]
+    kept, skipped = gold_rows(rows)
+    assert len(kept) == 2 and skipped == {"eval_split": 1, "not_ok": 1}
+    assert gold_cer(kept[0]) == 0 and gold_cer(kept[1]) == 2 / len("The model ⟨M1⟩ works.")
+    s = scores_from_rows(kept, ["bpc", "p90", "p99", "spike_frac"], label="gold", noisy_cer=0.0)
+    assert s.noisy.tolist() == [False, True]
+
+
+def test_gold_scores_from_scored_gold_chunks(tmp_path):
+    """End to end: scored gold chunk rows (features under ``score``) as --gold-scores."""
+    import json
+
+    from ocrfix.calibrate.run import run_calibrate
+    from ocrfix.config import load_config
+
+    def row(i, bpc, src, gold, **kw):
+        return {"chunk_id": f"d-c{i}", "lang": "en", "source_text": src, "gold_text": gold,
+                "gold_status": "ok", "split": "sft",
+                "score": {"bpc": bpc, "p90": bpc * 2, "p99": bpc * 3, "spike_frac": 0.0,
+                          "n_prose_tokens": 50}} | kw  # fmt: skip
+
+    def write(p, rows):
+        p.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), "utf-8")
+        return p
+
+    clean = write(tmp_path / "c.jsonl", [row(i, 1.0 + i / 1000, "a", "a") for i in range(60)])
+    bad = write(tmp_path / "b.jsonl", [
+        row(i, 3.0 + i / 1000, "a", "a", corruption="table", error_rate=0.02) for i in range(60)
+    ])  # fmt: skip
+    text = "The model works well on scanned pages."
+    gold = write(tmp_path / "g.jsonl", [
+        row(1, 1.0, text, text),                                   # undamaged, low score
+        row(2, 3.5, text.replace("model", "rnodel"), text),        # damaged, high score
+        row(3, 1.0, text.replace("works", "w0rks"), text),         # damaged, low score: missed
+        row(4, 3.5, text, text, split="eval"),                     # eval: never used
+    ])  # fmt: skip
+    cfg = load_config("cpu", ["calibrate.min_rows=50"])
+    _, rep = run_calibrate(cfg, clean, bad, tmp_path / "out", gold, plots=False)
+    g = rep.gold["*"]
+    assert (g["n"], g["n_noisy"], g["n_flagged"]) == (3, 2, 1)
+    assert rep.gold_skipped == {"eval_split": 1, "not_ok": 0}
+    assert rep.gold_bands["0 (no edit)"] == {"n": 1, "flagged": 0.0}
+    assert sum(b["n"] for b in rep.gold_bands.values()) == 3

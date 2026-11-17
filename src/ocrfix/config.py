@@ -7,6 +7,9 @@ Derived after the merge, so they are never set twice:
   hw.infer.correct_urls  null -> score_urls when the base corrects, else the tuned engines
                          (http://host:correct_port+i, `ocrfix serve --correct`)
   model, correct.model   a relative path resolves against the current folder, then the project
+  score.backend,         auto -> vllm when this profile has servers for it (score_urls /
+  correct.backend        correct_urls not empty: engines > 0, or addresses listed), else
+                         transformers (in the command itself); vllm / transformers as set
 The names vLLM serves the models under follow from the paths (`served_name`)."""
 
 from __future__ import annotations
@@ -60,6 +63,7 @@ def load_config(
     assert isinstance(cfg, DictConfig)
     _resolve_model_dirs(cfg)
     _derive_urls(cfg)
+    _resolve_backends(cfg)
     _validate(cfg)
     return cfg
 
@@ -119,6 +123,22 @@ def _derive_urls(cfg: DictConfig) -> None:
             inf.correct_urls = [f"http://{host}:{int(inf.correct_port) + i}" for i in range(n)]
         else:
             inf.correct_urls = list(inf.score_urls)
+
+
+BACKENDS = ("vllm", "transformers")
+
+
+def _resolve_backends(cfg: DictConfig) -> None:
+    """``auto`` -> vllm if the profile has servers for that use (the urls, after
+    `_derive_urls`), else transformers. So a GPU machine with engines uses vLLM for everything
+    and a machine without (the cpu profile) uses transformers for everything: scores always
+    come from one engine per machine."""
+    for section, urls in (("score", "score_urls"), ("correct", "correct_urls")):
+        b = str(cfg[section].backend)
+        if b == "auto":
+            cfg[section].backend = "vllm" if cfg.hw.infer[urls] else "transformers"
+        elif b not in BACKENDS:
+            raise ValueError(f"{section}.backend must be auto, vllm or transformers, got {b!r}")
 
 
 # The names vLLM serves the models under (`ocrfix serve`); requests ask for these.

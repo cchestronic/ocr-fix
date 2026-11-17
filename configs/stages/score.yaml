@@ -2,7 +2,9 @@
 # the calibration that turns scores into flags. Servers: the profile (hw.infer.score_urls).
 
 score:
-  backend: vllm                       # vllm (the servers) | transformers (this process, one GPU)
+  backend: auto                       # auto: vllm if the profile has servers (engines > 0 or urls),
+                                      # else transformers | vllm (the servers) | transformers
+                                      # (in this process, one GPU or the CPU)
   tau: 10.0                           # spike_frac = share of scored tokens above tau bits
   tau_candidates: [6, 8, 10, 12, 14, 16]   # also written as spike_frac@<tau> for calibrate
   boundary: 2                         # prose tokens not scored after a placeholder / chunk start

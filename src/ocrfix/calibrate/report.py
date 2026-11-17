@@ -73,11 +73,23 @@ def summary_md(cal: Calibration, rep: Report, pngs: list[Path]) -> str:
     )
 
     if rep.gold:
-        lines += ["## Real gold source paragraphs", ""]
+        lines += ["## Real gold OCR chunks", "",
+                  "The rules (fitted on fake damage) applied to real OCR chunks. damaged = cer "
+                  "(char edits to the truth / truth chars) above calibrate.gold_noisy_cer. "
+                  "Much lower recall here than on the fake damage means `corrupt` doesn't "
+                  "imitate this OCR well.", ""]  # fmt: skip
         keys = ["n", "n_noisy", "n_flagged", "precision", "recall", "false_flag", "auroc_spike"]
         lines += _md_table(
             ["lang", *keys], [[lg, *(g[k] for k in keys)] for lg, g in rep.gold.items()]
         )
+        if rep.gold_bands:
+            lines += ["", "Share flagged per damage band (cer):", ""]
+            lines += _md_table(
+                ["cer", "n", "flagged"],
+                [[k, v["n"], v["flagged"]] for k, v in rep.gold_bands.items()],
+            )
+        if any(rep.gold_skipped.values()):
+            lines += ["", f"Skipped gold rows: {rep.gold_skipped} (the eval split is never used)."]
 
     if rep.noise_chunk:
         lines += ["## Whole-chunk noise (score.noise.whole_chunks)", "",

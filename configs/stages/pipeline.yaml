@@ -1,0 +1,15 @@
+# `ocrfix pipeline <stage>`: the README's commands as four stages (src/ocrfix/pipeline.py).
+# Every step uses its own default settings; --set on the pipeline command reaches every step.
+
+pipeline:
+  data_dir: data/real                 # corpus/, gold/ocr|truth/, clean/ in; every output under it
+  calibration_dir: data/calibration   # calibration.yaml, noise reports (score.calibration points here)
+  runs_dir: runs                      # sft/, sft_merged/, dpo/, dpo_merged/
+  dpo: false                          # train stage: also DPO (and eval it)
+  model: null                         # corpus stage: the correction model; null = runs_dir/
+                                      # dpo_merged with dpo, else runs_dir/sft_merged
+  max_steps: null                     # train sft / dpo: stop after N optimizer steps (quick tests)
+  write_noise: true                   # calibrate-noise writes score.noise into configs/stages/score.yaml
+  both_memory: [0.44, 0.42]           # GPU memory share of the base / trained engines when both run
+                                      # (when the profile gives each engine > 0.5)
+  ready_timeout: 1800                 # seconds to wait for the engines' /health

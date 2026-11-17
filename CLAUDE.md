@@ -9,7 +9,7 @@ Models: `model` is set per profile (rtx5090: `Qwen3.5-4B` in the project folder;
 
 The unit of work is the 512-768 token chunk. Commands: `chunk`, `reconstruct`,
 `score`, `correct`, `corrupt`, `data sft|dpo`, `eval`, `compare`, `summary`, `report`, `gold chunks`,
-`errors table`, `calibrate`, `calibrate-noise`, `calibrate-noise-chunk`, `bpc-hist`, `serve`, `train sft|dpo|merge`, `config`. `docs/real_data.md` runs them in
+`errors table`, `calibrate`, `calibrate-noise`, `calibrate-noise-chunk`, `bpc-hist`, `serve`, `train sft|dpo|merge`, `config`, `markup`, `pipeline`. `docs/real_data.md` runs them in
 order on real data; `docs/runbook.md` covers install, the H200 track and adding a profile.
 The older paragraph pipeline (ingest, score, fix, correct, verify, data, eval, pipeline, gold
 sample/import) was removed on 2026-11-13; a copy is in `backups/before_paragraph_removal_*.tar.gz`.
@@ -47,6 +47,8 @@ src/ocrfix/llm/                client.py (vLLM HTTP client), hf.py (transformers
 src/ocrfix/editdist.py         Levenshtein (rapidfuzz if installed)
 scripts/                       make_wheelhouse.py, install_offline.py, build_causal_conv1d.py, make_test_corpus.py
 src/ocrfix/serve.py            `ocrfix serve`: the vLLM engines
+src/ocrfix/pipeline.py         `ocrfix pipeline prepare|calibrate|train|corpus|all`: the README's commands as
+                               stages (subprocess per step, skip-if-done markers, starts/stops `serve`)
 tests/fixtures/                sample_mineru/ (tiny tokenizer), records.jsonl
 docs/annotation_guideline.md   gold .md pairs: what to fix, checks, examples
 docs/real_data.md              real data step by step: gold chunks -> calibration -> SFT/DPO -> eval -> corpus
@@ -102,6 +104,23 @@ takes `--profile NAME` and `--set key=value` (repeatable); most take `--limit N`
 - **Scripts are Python:** `scripts/make_wheelhouse.py`, `install_offline.py`,
   `build_causal_conv1d.py` (stdlib only), `make_test_corpus.py`. `ocrfix train` re-execs under
   torchrun when `hw.n_gpus > 1` and sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+
+## Pipeline (`src/ocrfix/pipeline.py`, `configs/stages/pipeline.yaml`)
+
+**`ocrfix pipeline <stage> [--dry-run] [--redo] [--from N]`**: `plan(stage, cfg)` lists the
+README's commands for `prepare | calibrate | train | corpus` (`all` = the four) as `Step`s
+(args, `needs` = cpu / base / both / free, `done` marker path, step `sets`, `tuned` model).
+Each step runs as `python -X utf8 -m ocrfix ...` with the pipeline's `--profile` / `--set`
+then the step's own sets (so they win); output shown and logged to
+`<pipeline.data_dir>/pipeline_logs/NN-name.log`. A step with an existing `done` file is
+skipped (`--redo` ignores that); resumable commands (markup, chunk, score, correct) always
+run. `Servers.need(step)`: with vllm backends starts `serve` (base) and `serve --correct`
+(trained, `correct.model` = step.tuned) as subprocesses and waits for every url's `/health`;
+when both run and the profile gives an engine > 0.5 memory, base restarts at
+`pipeline.both_memory[0]` and tuned starts at `[1]`; a different tuned model restarts tuned;
+`free` (training) stops all; engines already healthy before are used, never stopped. No
+servers with transformers backends. Tested on CPU end to end (tiny model, transformers);
+the vLLM start/stop sequence only by unit test (`tests/test_pipeline.py`).
 
 ## Markup (`src/ocrfix/markup/`)
 
@@ -177,6 +196,10 @@ shards; `--limit` counts shards). Details in the `stages/run.py` docstring.
   the first `score.boundary` (2) prose tokens after a placeholder and at the chunk start are
   not scored. Writes `score` (features as in Score, plus `n_tokens`), `flag` (calibration, else
   null) and `status: scored` (or `score_error` + `error`).
+- **Backend choice:** `score.backend` / `correct.backend` default `auto`, resolved by
+  `config._resolve_backends` after `_derive_urls`: `vllm` if the profile's `score_urls` /
+  `correct_urls` are non-empty (engines > 0 or addresses listed), else `transformers` (the
+  cpu profile). One engine per machine, so scores stay comparable; `--set` forces either.
 - **Backends** (`score.backend`): `vllm` = POST `/v1/completions` with prompt = `[eos] + ids`,
   `prompt_logprobs: 0`, `max_tokens: 1` (`score.parse_prompt_logprobs`; vLLM skips the prefix
   cache for such requests), round-robin over `hw.infer.score_urls`, model `base`
@@ -502,9 +525,13 @@ clean_scored damaged_scored data/calibration`. `calibrate.run.flat_scores` lifts
     spike_frac 0.95 / 0.87). Pooled over languages it is poor (0.77, different baselines),
     which per-language rules avoid. On the test data, recall at 1 error / 100 chars went
     en 0.95 -> 1.0, ko 0.51 -> 0.71; document CER after correcting 4 shards 0.27% -> 0.23%.
-- **Gold:** with `--gold-scores` (scored rows carrying `cer`), precision, recall and
-  false-flag rate of the rules on real source text, where noisy means
-  `cer > calibrate.gold_noisy_cer`.
+- **Gold:** `--gold-scores` = `score` output of `gold chunks` sft/ (+ dpo/), noise removal
+  off. `run.gold_rows` keeps `gold_status: ok`, never `split: eval` (counted in
+  `gold_skipped`; none left -> error); `run.gold_cer` = levenshtein(source_text, gold_text) /
+  len(gold_text) on the masked text (a `cer` field wins). Reports precision, recall and
+  false-flag rate of the rules (noisy = `cer > calibrate.gold_noisy_cer`, 0) and
+  `gold_bands`: share flagged per cer band (`GOLD_BANDS`: 0, 0-0.5%, 0.5-2%, 2-5%, >5%).
+  Report only: the fitted rules don't change.
 - **Outputs:**
   - `calibration.yaml`: `{version, tau, variant, rules: {lang|*: {spike_frac, p90, bpc,
     recall, false_flag, target_met, n_clean, n_corrupted}}}` (no `bpc` key = off: older files

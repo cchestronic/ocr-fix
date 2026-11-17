@@ -28,7 +28,7 @@ def test_every_stage_file_loads_and_overrides_work():
     stages = sorted((config_dir() / "stages").glob("*.yaml"))
     names = {p.stem for p in stages}
     assert names == {"chunk", "score", "gold", "corrupt", "calibrate", "sft", "dpo", "correct",
-                     "eval", "reconstruct", "markup"}  # fmt: skip
+                     "eval", "reconstruct", "markup", "pipeline"}  # fmt: skip
     assert len(load_base()) == len(stages) + 1
     cfg = load_config("rtx5090", ["train.dpo.beta=0.2", "correct.checks.min_bpc_gain=0.05"])
     assert cfg.train.dpo.beta == 0.2 and cfg.correct.checks.min_bpc_gain == 0.05
@@ -141,3 +141,22 @@ def test_cluster_example_profile(tmp_path):
     assert [u.split(":")[1] for u in cfg.hw.infer.score_urls] == ["//10.0.0.11"] * 4
     assert len(cfg.hw.infer.correct_urls) == 8
     assert "cluster" not in PROFILES  # the example is not a profile as shipped
+
+
+def test_auto_backend_follows_the_machine():
+    """auto: vllm where the profile has servers, transformers where it has none (cpu)."""
+    import pytest
+
+    def be(profile, *sets):
+        c = load_config(profile, list(sets))
+        return str(c.score.backend), str(c.correct.backend)
+
+    assert be("cpu") == ("transformers", "transformers")
+    assert be("rtx5090") == ("vllm", "vllm")
+    assert be("h200x8") == ("vllm", "vllm")
+    # servers elsewhere listed on a machine without its own engines
+    assert be("cpu", "hw.infer.score_urls=[http://10.0.0.11:8000]") == ("vllm", "vllm")
+    # forcing one still wins
+    assert be("rtx5090", "score.backend=transformers") == ("transformers", "vllm")
+    with pytest.raises(ValueError, match="auto, vllm or transformers"):
+        load_config("cpu", ["score.backend=hf"])
