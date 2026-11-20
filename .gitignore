@@ -9,3 +9,4 @@ __pycache__/
 Qwen3.5-*/
 *.tmp
 backups/
+wheelhouse_extra/
