@@ -1,28 +1,55 @@
-# DPO: the pairs (`ocrfix data dpo`) and the training run (`ocrfix train dpo`). Batch, LoRA
-# and logging come from `train:` (sft.yaml); the model that answers the prompts is
-# correct.model / correct.adapter (correct.yaml).
+# =============================================================================================
+# dpo.yaml: `ocrfix data dpo` (the pairs) and `ocrfix train dpo` (optional second round).
+# =============================================================================================
+# DPO (direct preference optimization) shows the SFT model its own mistakes: for each prompt,
+# the right answer ("chosen") against a wrong answer the model actually gave ("rejected").
+# The served correction model (correct.model, correct.backend) answers the prompts, so serve
+# the merged SFT model first. Batch, LoRA and logging come from `train:` (sft.yaml) and
+# hw.train (the profile). If `data dpo` reports the model already right on nearly every
+# prompt (pairs.stats.json), DPO has little to learn: skip it.
+# =============================================================================================
 
-dpo:                                  # `ocrfix data dpo` (stages/dpo.py); prompts as `data sft`
-  n_samples: 4                        # sampled answers per prompt, besides the greedy one
+dpo:                                  # `ocrfix data dpo` (src/ocrfix/stages/dpo.py)
+  # Besides one greedy answer (what `correct` would output), this many sampled answers per
+  # prompt, to find more of the model's mistakes. More = more pairs, more generation time.
+  n_samples: 4
+  # Sampling randomness for those answers (higher = more varied, more wrong answers).
   temperature: 0.8
   top_p: 0.95
-  max_pairs: 2                        # rejected answers per prompt (greedy first, then near misses)
-  constructed: [unchanged, half_fixed, placeholder_dropped]   # off-policy kinds, in turn
-  constructed_share: 0.25             # of prompts the model always got right: one constructed pair
-  max_prompts: {synthetic: null, gold: null, identity: null}   # per source; null = all
+  # Rejected answers kept per prompt: the greedy one first (if wrong), then the sampled ones
+  # closest to the right answer (near misses teach the most).
+  max_pairs: 2
+  # For prompts the model always got right: a made-up wrong answer, of these kinds in turn:
+  #   unchanged            the damaged input returned as it is
+  #   half_fixed           half of the needed fixes undone
+  #   placeholder_dropped  a ⟨M1⟩ / ⟨T1⟩ / ⟨P1⟩ left out
+  constructed: [unchanged, half_fixed, placeholder_dropped]
+  # Share of those always-right prompts that get one made-up pair (they only keep the model
+  # from drifting; easy pairs teach little).
+  constructed_share: 0.25
+  # At most this many prompts per source (null = all): to cap the generation time.
+  max_prompts: {synthetic: null, gold: null, identity: null}
 
 train:
-  dpo:
+  dpo:                                # `ocrfix train dpo` (src/ocrfix/train/dpo.py)
     epochs: 1
+    # Much lower than SFT: DPO only nudges a model that is already good.
     lr: 5.0e-6
+    # Strength of the pull towards chosen and away from rejected, relative to the reference.
+    # Higher = stays closer to the reference model (more conservative).
     beta: 0.1
+    # The DPO loss (sigmoid = the standard DPO loss).
     loss_type: sigmoid
     # The mode (qlora | lora | full) is hw.train.mode, as for SFT. The SFT result passed to
-    # `train dpo` may be a LoRA adapter or a full model dir (full mode needs a full one).
-    # reference, LoRA modes (no second weight copy):
-    #   sft:  a frozen copy of the SFT adapter (the usual DPO reference)
-    #   base: the adapter disabled = the base model (the full SFT model if that's the base)
-    # reference, full mode:
-    #   sft:  the starting policy (the SFT model); base: the base model as a frozen copy
+    # `train dpo` may be a LoRA adapter or a full model folder (full mode needs a full one).
+    # The reference the model is compared with:
+    #   LoRA modes (no second copy of the weights):
+    #     sft   a frozen copy of the SFT adapter (the usual DPO reference)
+    #     base  the adapter switched off = the base model
+    #   full mode:
+    #     sft   the starting model (the SFT model)
+    #     base  the base model, loaded as a frozen copy
     reference: sft
-    precompute_ref: true              # full mode: reference log-probs once, before training
+    # Full mode: compute the reference's log-probabilities once before training (saves memory
+    # during training).
+    precompute_ref: true

@@ -143,11 +143,13 @@ it. `eval` reports it as missed `hangul_garbled`.
 ## Track 2: 4x H200 (later)
 
 The commands are the same with `--profile h200x4`. The profile does the rest:
-- **Scoring and correction:** `score` / `correct` round-robin over the 4 engines.
+- **Scoring and correction:** `score` / `correct` round-robin over the 4 engines of each model.
 - **Training:** `ocrfix train` uses torchrun.
-- **Serving:** `ocrfix serve` starts **4 data-parallel engines**, GPU *i* on port 8000+*i*
-  with max-model-len 8192 and no tensor parallelism. The client round-robins over
-  `hw.infer.score_urls` (default: those engines) with 512 requests in flight.
+- **Serving:** `hw.servers` lists both models on all 4 GPUs (`127.0.0.1`), so `ocrfix serve`
+  starts **4 data-parallel base engines**, GPU *i* on port 8000+*i*, and with `correct.model`
+  set **4 trained engines** on 8100+*i*; 0.44 of each GPU's memory per engine (automatic),
+  max-model-len 8192, one GPU per engine (`gpus_per_engine: 1`). The client round-robins over
+  all engines of a model with engines × `max_num_seqs` (1024) requests in flight.
 
 ### 2.1 Install
 
@@ -159,7 +161,8 @@ The commands are the same with `--profile h200x4`. The profile does the rest:
 
 ```bash
 python3 scripts/install_offline.py --with-kernels wheelhouse .venv
-ocrfix serve --profile h200x4 --dry-run    # 4 vllm serve commands, ports 8000-8003
+ocrfix serve --profile h200x4 --dry-run    # 4 base vllm serve commands, ports 8000-8003
+ocrfix serve --profile h200x4 --dry-run --set correct.model=runs/sft_merged   # + 4 trained, 8100-8103
 ```
 
 - **vLLM attention:** `FLASH_ATTN`, vLLM's bundled FlashAttention, which supports sm_90.
@@ -171,9 +174,11 @@ ocrfix serve --profile h200x4 --dry-run    # 4 vllm serve commands, ports 8000-8
 
 ### 2.2 The corpus
 
-The commands of [real_data.md](real_data.md) step 10 with `--profile h200x4`: 4 base-model
-engines for scoring and the merged model for correction (two sets of engines need two sets of
-GPUs or machines; see `configs/profiles/cluster.yaml.example`). Copy `runs/*_merged` and
+The commands of [real_data.md](real_data.md) step 10 with `--profile h200x4`: one
+`ocrfix serve --set correct.model=runs/sft_merged` starts 4 base-model engines for scoring and
+4 engines of the merged model for correction, sharing the GPUs. Several GPU servers: one
+profile listing every server's groups, `ocrfix serve` on each (see
+`configs/profiles/cluster.yaml.example`). Copy `runs/*_merged` and
 `data/calibration/` from the 5090 work, or redo them with the 9B (scores and calibration
 belong to one model). Every chunk stage resumes by shard, so a run can span sessions.
 
@@ -221,15 +226,18 @@ never branches on GPU model, so a new machine means a new file, never an `if`.
      - `per_device_batch_size`, `max_seq_len`, `gradient_checkpointing`, `optim`;
      - `packing` (needs the kernels);
      - `distributed` (`auto`/`none`/`ddp`/`fsdp`), plus `fsdp` for full fine-tuning.
+   - `servers`: the vLLM server groups, `{model: base|trained, host, gpus, memory?}`:
+     - `model`: `base` (the base model) or `trained` (`correct.model`);
+     - `host`: `127.0.0.1`, or the machine's LAN address to serve other machines;
+     - `gpus`: `all` or a list, e.g. `[0, 1]` (one engine per `infer.gpus_per_engine` GPUs);
+     - `memory` (optional): automatic, 0.88 shared by the groups on the same GPUs (two: 0.44);
+     - `[]` for a machine without GPU servers (the backends then use transformers).
    - `infer`:
-     - `engines`: the number of engines, ≤ `n_gpus`;
-     - `tensor_parallel_size`: 1 unless the model doesn't fit on one GPU;
+     - `gpus_per_engine`: 1 unless the model doesn't fit on one GPU;
+     - `ports: {base, trained}`: engine k of a model on a machine listens on `ports[model] + k`;
      - `max_model_len`: ≥ `train.max_seq_len`;
-     - `gpu_memory_utilization`, `max_num_seqs`;
-     - `host` (`127.0.0.1`, or the LAN address to serve other machines);
-     - `base_port`: engine i listens on `base_port + i`;
-     - `concurrency`: about `max_num_seqs × engines`;
-     - `score_urls` / `correct_urls`: `null` (this machine's engines) or a list of URLs.
+     - `max_num_seqs`;
+     - `concurrency`: `null` (automatic: engines × `max_num_seqs`).
    - `scorer` (transformers scoring only): `max_batch_tokens` (tokens per forward pass; start
      at about 6k per 32 GB of free memory), `logits_chunk`.
 3. Check it:
@@ -241,7 +249,7 @@ never branches on GPU model, so a new machine means a new file, never an `if`.
    ```
 
    The tests run on every file in `configs/profiles/`. They check that each required key is
-   set, that the engines fit the GPU count, and that
+   set, that every server group's GPUs exist on the machine, and that
    `max_model_len ≥ train.max_seq_len`.
 4. Measure before a long run:
    - `ocrfix score` on a few shards writes tokens/s to `score_stats.json`;

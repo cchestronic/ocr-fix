@@ -219,7 +219,7 @@ def text_examples(w: Words, texts: list[str], mask: np.ndarray, n: int = 30) -> 
 def write_score_yaml(path: Path, fit: dict[str, Any]) -> None:
     """Replace core / extend / min_chars under score.noise, keeping every other line, and the
     comment line just above min_chars."""
-    lines = path.read_text().splitlines(keepends=True)
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     fmt = lambda d: "{" + ", ".join(f"{k}: {d[k]}" for k in ("hangul", "other")) + "}"  # noqa: E731
     model = Path(fit["model"]).name
     stamp = (
@@ -251,7 +251,7 @@ def write_score_yaml(path: Path, fit: dict[str, Any]) -> None:
     if seen != set(new):
         raise ValueError(f"{path}: score.noise.{sorted(set(new) - seen)} not found")
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text("".join(out))
+    tmp.write_text("".join(out), encoding="utf-8")
     tmp.replace(path)
 
 

@@ -1,30 +1,75 @@
-# `ocrfix correct`: which model corrects, how it decodes, and the checks every
-# correction must pass before it is accepted (including the re-score). The same model answers
-# `data dpo` prompts and is what `ocrfix serve --correct` serves. Servers: the profile
-# (hw.infer.correct_urls).
+# =============================================================================================
+# correct.yaml: `ocrfix correct` (src/ocrfix/stages/run.py), and the model `data dpo` and
+# the trained server groups (hw.servers, `./ocrfix serve`) use.
+# =============================================================================================
+# For each flagged chunk (or every chunk with --all): the correction model rewrites the whole
+# masked chunk; the answer must pass every check below and must not be more surprising to the
+# base model than the original; then it replaces the chunk ("accepted"). Otherwise the
+# original is kept ("rejected" / "unchanged" / "error"). Every attempt is kept in `history`.
+# =============================================================================================
 
 correct:
-  model: null                         # a merged model dir (`train merge` output); null = the base
-  adapter: null                       # or a LoRA adapter dir, served on top of the base
-  backend: auto                       # auto: vllm if the profile has servers (engines > 0 or urls),
-                                      # else transformers | vllm (the servers) | transformers
-  langs: [ko, en, mixed]              # chunk languages to correct; cjk (Chinese / Japanese) and
-                                      # other chunks pass through unchanged
-  hf:                                 # backend: transformers
-    batch_size: 32                    # sequences per generate() call (n samples count each);
-                                      # out of memory, a batch is split in half and retried
-    wait: 0.05                        # seconds to collect concurrent requests into a batch
-  enable_thinking: false              # Qwen3.5 thinking mode (always off for correction)
-  max_tokens_factor: 1.3              # max answer tokens = factor x input tokens + extra
+  # THE CORRECTION MODEL. A merged model folder (`train merge` output, e.g. runs/sft_merged or
+  # /models/ocrfix-sft-merged); null = the untrained base model (`model`). Relative = to the
+  # current folder, then the project folder; an absolute path is safest on servers.
+  # With vLLM, `./ocrfix serve` starts the trained server groups with this same setting, so
+  # set it here (or the same --set on both). Several servers: the same path on every one.
+  # Check:
+  #   ./ocrfix config --key correct.model
+  model: null
+  # Or a LoRA adapter folder (`train sft` output) served on top of the base, without merging.
+  # Prefer a merged model: serving a QLoRA adapter differs slightly from what was trained, and
+  # vLLM 0.33 crashed serving an adapter next to base scoring requests.
+  adapter: null
+  # Who runs the correction model: auto (vllm if the profile has servers for it, else
+  # transformers), vllm (the trained server groups), or transformers (loaded inside the
+  # command, one GPU or the CPU; 4-8x slower than vLLM on the 5090).
+  backend: auto
+  # Chunk languages that are corrected (lang in default.yaml). cjk (Chinese / Japanese) and
+  # other (math-only, numbers, other scripts) pass through unchanged.
+  langs: [ko, en, mixed]
+  # backend: transformers only.
+  hf:
+    # Sequences per generate() call (sampled answers count each). Halved and retried when
+    # memory runs out. 32 measured best on the 5090 next to a vLLM engine.
+    batch_size: 32
+    # Seconds to wait to collect requests into one batch.
+    wait: 0.05
+  # Qwen3.5 thinking mode. Always off for correction (the answer is the chunk, nothing else);
+  # training renders the prompts the same way.
+  enable_thinking: false
+  # Longest answer allowed: factor x input tokens + extra. An answer cut there is an "error"
+  # (truncated) and the original is kept.
+  max_tokens_factor: 1.3
   max_tokens_extra: 16
-  retries: 3                          # per request, next server each time
-  backoff: 2.0                        # seconds, doubled per retry
-  timeout: 600                        # seconds per request
-  checks:                             # a correction failing any of these is rejected
-    length_ratio: [0.8, 1.25]         # len(corrected) / len(source)
-    max_edit_ratio: 0.15              # char edit distance / len(source)
-    max_script_shift: 0.1             # max change of the Hangul share of prose letters
-    # re-score: the corrected text is scored again with the base model
-    min_bpc_gain: 0.0                 # bpc(source) - bpc(corrected) must be >= this
-    spike_ratio: 1.0                  # spike_frac(corrected) <= spike_ratio * spike_frac(source)
-    rescore_failed: false             # re-score corrections that already failed a text check
+  # Requests: attempts per request (each on the next server), seconds before a retry (doubled
+  # each time), seconds before a request is given up.
+  retries: 3
+  backoff: 2.0
+  timeout: 600
+
+  # A correction failing any of these is rejected and the original chunk kept.
+  checks:
+    # (always on, no setting) every placeholder ⟨M1⟩ ⟨T1⟩ ⟨P1⟩ back, once, in order; no math or
+    # table span lost or added.
+    #
+    # Length of the answer / length of the input (masked text): outside this range the model
+    # added or dropped too much (rewriting, summarizing).
+    length_ratio: [0.8, 1.25]
+    # Character edits from input to answer / input length. Above it the model changed too much
+    # for an OCR fix. Raise it for very damaged corpora (more is allowed to change), lower it
+    # to be safer.
+    max_edit_ratio: 0.15
+    # Same language required, and the share of Hangul among the letters may move at most this
+    # much (catches translating or dropping Korean / English parts).
+    max_script_shift: 0.1
+    # Re-score: the answer is scored again with the base model.
+    # bpc(input) - bpc(answer) must be at least this: 0 = not worse than before; a positive
+    # value demands a clear improvement (fewer but safer accepts).
+    min_bpc_gain: 0.0
+    # spike_frac(answer) <= spike_ratio x spike_frac(input): no more very surprising tokens
+    # than before.
+    spike_ratio: 1.0
+    # Re-score answers that already failed a text check (only for statistics; costs scoring
+    # time, changes nothing).
+    rescore_failed: false

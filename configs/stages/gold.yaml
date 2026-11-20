@@ -1,11 +1,37 @@
-# `ocrfix gold chunks` (.md pairs -> chunk gold) and `ocrfix errors table`.
+# =============================================================================================
+# gold.yaml: `ocrfix gold chunks` (gold/chunks.py) and `ocrfix errors table` (errors/).
+# =============================================================================================
+# Gold = your hand-corrected documents: gold/ocr/**.md (MinerU, unchanged) + gold/truth/**.md
+# (corrected, same paths). `gold chunks` cuts ocr/ into chunks and the truth at the same
+# places, and splits the documents three ways. `errors table` measures which errors your OCR
+# makes and how often, from the sft side.
+# =============================================================================================
 
 gold:
-  split:                              # by document; the rest is sft. split.json pins documents
-    eval: 0.2                         # measurement only, never trained on
-    dpo: 0.2                          # DPO prompts the SFT model hasn't seen
-  errors:                             # `errors table` (and the error types of `eval`)
+  # Which share of the gold documents goes where. Always whole documents (by a hash of the
+  # path), so chunks of one paper never land on two sides. The rest (0.6 by default) is `sft`.
+  #   eval  measurement only (`eval`), never trained on, never used to fit anything
+  #   dpo   prompts for DPO that the SFT model hasn't seen
+  #   sft   training data, error statistics (`errors table`), noise and flag calibration
+  # split.json in the output pins the split: once written, a rerun keeps every document on
+  # its side even if you change these shares (delete split.json to re-split). More eval =
+  # a more reliable measurement, less training data. Without DPO, set dpo: 0 to train on it.
+  split:
+    eval: 0.2
+    dpo: 0.2
+
+  # `errors table`, and the error types `eval` reports recall for.
+  errors:
+    # Not used by the current code (kept so older settings load).
     max_ngram: 3
-    header_footer_min_chars: 8        # dropped runs this long (or page numbers) = header/footer
-    confusion_max_len: 4              # longer substitutions count as "other"
-    top_k: 50                         # char_confusion pairs listed
+    # OCR text the truth deletes is a header / footer (`header_footer_insert`) when it is at
+    # least this many non-space characters, or a bare page number. Shorter deletions count as
+    # other error types (dropped junk, duplicates).
+    header_footer_min_chars: 8
+    # A substitution of at most this many characters on each side, with no space, is a
+    # `char_confusion` (`rn` -> `m`, `1` -> `l`, `방볍` -> `방법`). Longer ones count as `other`.
+    # The confusion pairs are what `corrupt` copies to make realistic fake damage.
+    confusion_max_len: 4
+    # How many of the most frequent character confusions error_table.json lists (per language
+    # and overall); `corrupt` draws from these.
+    top_k: 50

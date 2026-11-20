@@ -1,4 +1,14 @@
-# `ocrfix eval`: whole corrected documents vs truth/. Error types: gold.errors.
+# =============================================================================================
+# eval.yaml: `ocrfix eval <truth> name=<dir>... <out>` (src/ocrfix/stages/eval.py).
+# =============================================================================================
+# Compares whole corrected documents with your hand-made truth files: CER (character error
+# rate), WER (words), SER (spacing), false fixes (changes the truth didn't make), recall per
+# error type, and a paired test of whether one system beats another. The error types come
+# from gold.errors (gold.yaml). Use it on the gold eval documents only (never trained on).
+# =============================================================================================
 
 eval:
-  exact_max_n: 25                     # exact Wilcoxon p up to this many non-zero pairs
+  # Systems are compared with a paired Wilcoxon test on per-document CER (is one really better,
+  # or is it luck?). Up to this many documents that differ, the exact p-value is computed;
+  # above it, the usual approximation (faster, as accurate for many documents).
+  exact_max_n: 25

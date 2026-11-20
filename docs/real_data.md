@@ -34,13 +34,15 @@ batch sizes) is `configs/profiles/rtx5090.yaml`. Edit a file, or change one run 
 The model, scores and calibration belong together. After switching 4B → 9B, redo steps 3–9.
 
 **vLLM engines** run in their own terminal (or with `&`): `ocrfix serve` starts them and waits
-until they are ready; Ctrl-C (or `pkill -f "[o]crfix serve"`) stops them. Steps 7, 9 and 10 use
-two engines on one GPU: the base model on 8100 (scoring) and the tuned model on 8101
-(correction). Set this once per shell for them:
+until they are ready; Ctrl-C (or `pkill -f "[o]crfix serve"`) stops them. It starts the
+groups of `hw.servers` in the profile: on the 5090 the base model on 8100 (scoring) and the
+tuned model on 8101 (correction), sharing the one GPU (0.44 of its memory each, automatic).
+Without `correct.model` only the base starts. Steps 7, 9 and 10 use both. Set this once per
+shell for them:
 
 ```bash
 E="data/real/errors/error_table.json data/real/errors/confusion_map.json"
-TUNED=(--set correct.model=runs/sft_merged)    # the tuned engine on correct_port (8101)
+TUNED=(--set correct.model=runs/sft_merged)    # the trained engine (8101) serves this model
 ```
 
 ## 1. Gold → chunks (CPU)
@@ -149,8 +151,7 @@ On the 5090, about 1 hour per 4,000 examples (QLoRA, 4B). With several GPUs (`hw
 ## 7. DPO pairs (GPU: base + SFT model)
 
 ```bash
-ocrfix serve --memory 0.44 &                                              # base, 8100
-ocrfix serve --correct --memory 0.42 "${TUNED[@]}" &                      # SFT model, 8101
+ocrfix serve "${TUNED[@]}" &                              # base on 8100, SFT model on 8101
 ocrfix corrupt data/real/chunks_clean $E data/real/train/corrupt_dpo.jsonl --set seed=7
 ocrfix data dpo data/real/dpo/pairs.jsonl \
   --synthetic data/real/train/corrupt_dpo.jsonl --gold data/real/gold_chunks/dpo \
@@ -180,13 +181,14 @@ The reference model is the SFT adapter (`train.dpo.reference: sft`).
 Score the eval chunks once with the base model, then correct them with each model:
 
 ```bash
-ocrfix serve --memory 0.44 &                                              # base, 8100
+ocrfix serve &                                            # base, 8100 (no correct.model)
 ocrfix score data/real/gold_chunks/eval data/real/eval/scored
 ocrfix correct data/real/eval/scored data/real/eval/base           # the base corrects
-ocrfix serve --correct --memory 0.42 "${TUNED[@]}" &                      # SFT model, 8101
+ocrfix serve --only trained "${TUNED[@]}" &               # SFT model, 8101
 ocrfix correct data/real/eval/scored data/real/eval/sft "${TUNED[@]}"
 ocrfix correct data/real/eval/scored data/real/eval/sft_all --all "${TUNED[@]}"
-# the DPO model: stop the 8101 engine, start it with correct.model=runs/dpo_merged, then
+# the DPO model: stop the 8101 engine, then
+# `ocrfix serve --only trained --set correct.model=runs/dpo_merged &`, then
 ocrfix correct data/real/eval/scored data/real/eval/dpo --set correct.model=runs/dpo_merged
 
 ocrfix eval data/real/gold/truth \
@@ -210,7 +212,8 @@ DPO sampling (step 7) and eval corrections (step 9) can run in-process with tran
 (`--set correct.backend=transformers`, model `correct.model`), with no second engine and no
 merge needed for an adapter (`--set correct.adapter=runs/sft`). The corpus (step 10) stays on
 vLLM. Before trusting it, check that both backends give the same results, one engine at a time
-(leave room for transformers with `--memory 0.45` on the engine):
+(`serve --only base` or `--only trained`: with both groups listed on the GPU, each engine takes
+0.44 of its memory, which leaves room for transformers):
 
 ```bash
 # scores: the base engine on 8100 vs transformers loading the base

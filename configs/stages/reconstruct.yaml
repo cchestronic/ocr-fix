@@ -1,8 +1,17 @@
-# `ocrfix reconstruct --source current`: chunks -> corrected .md files. A document that noise
-# removal emptied is not written; it is listed in <out_dir>/dropped_docs.jsonl instead.
-# A document with a table is never dropped.
+# =============================================================================================
+# reconstruct.yaml: `ocrfix reconstruct <chunks> <out> --source current` (chunks/rebuild.py).
+# =============================================================================================
+# Puts the chunks back together into .md files, with math, tables and protected text restored.
+# With --source current (the corrected text), a document that noise removal left nearly empty
+# is not written: it was almost all garbage. It is listed in <out>/dropped_docs.jsonl instead
+# (and an older copy in <out> is deleted). A document containing a table is never dropped.
+# --source original rebuilds the input byte for byte and drops nothing.
+# =============================================================================================
 
 reconstruct:
-  # letters and digits (any script; math and tables count) left in the corrected document
-  min_letters: 300                    # fewer: dropped (0 = off)
-  min_kept_share: 0.1                 # kept letters / letters in the original below this: dropped (0 = off)
+  # Letters and digits (any script; math and tables count) the corrected document must still
+  # have; fewer: dropped. 0 = off.
+  min_letters: 300
+  # Letters kept / letters in the original document; below this share: dropped (noise removal
+  # took more than 90% of it). 0 = off. Both rules apply: either one drops the document.
+  min_kept_share: 0.1

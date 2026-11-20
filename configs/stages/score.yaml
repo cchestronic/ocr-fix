@@ -1,29 +1,72 @@
-# `ocrfix score`: how surprising each token is to the base model, noise removal, and
-# the calibration that turns scores into flags. Servers: the profile (hw.infer.score_urls).
+# =============================================================================================
+# score.yaml: `ocrfix score` (src/ocrfix/stages/run.py, score.py, noise.py).
+# =============================================================================================
+# The base model (`model`, the profile) reads each chunk and measures how surprising every
+# token is, in bits: OCR damage and garbage are surprising, clean text is not. From that:
+#   score  per chunk: bpc (bits per character; lower = cleaner), p90 / p99 / max bits,
+#          spike_frac (share of very surprising tokens), n_chars, low_confidence
+#   flag   damaged or not, by the calibration (see `calibration`); `correct` sends flagged
+#          chunks to the correction model
+#   noise  runs of garbage are cut out first (see `noise`), and the chunk is scored again
+# Math, tables and protected text (placeholders) are never scored.
+# The same settings are used by the other commands that score: `correct` (re-score of each
+# answer), `calibrate-noise`, `calibrate-noise-chunk`, `compare`. Scores belong to one model:
+# after switching models (4B -> 9B), calibrate again.
+# =============================================================================================
 
 score:
-  backend: auto                       # auto: vllm if the profile has servers (engines > 0 or urls),
-                                      # else transformers | vllm (the servers) | transformers
-                                      # (in this process, one GPU or the CPU)
-  tau: 10.0                           # spike_frac = share of scored tokens above tau bits
-  tau_candidates: [6, 8, 10, 12, 14, 16]   # also written as spike_frac@<tau> for calibrate
-  boundary: 2                         # prose tokens not scored after a placeholder / chunk start
-  min_scored_tokens: 10               # fewer -> low_confidence: true, never flagged
-  # `ocrfix calibrate` output. When the file exists, its tau replaces `tau` and every chunk gets
-  # `flag`. null = no flags (use --set score.calibration=null to score calibration inputs).
+  # Who runs the base model:
+  #   auto          vllm if the profile has base server groups (hw.servers), else
+  #                 transformers (e.g. the cpu profile: servers: []). The default: each
+  #                 machine always uses one engine, so scores stay comparable.
+  #   vllm          requests to the `./ocrfix serve` servers (fast, every GPU / server)
+  #   transformers  the model loaded inside the command (one GPU, or the CPU; ~2x slower
+  #                 than vLLM per GPU on the 5090)
+  backend: auto
+  # spike_frac = share of scored tokens costing more than `tau` bits. The calibration file
+  # picks the best tau (from `tau_candidates`) and replaces this value when it exists; this
+  # one is only used without a calibration.
+  tau: 10.0
+  # Other tau values written as spike_frac@6, @8, ... so `calibrate` can choose among them.
+  tau_candidates: [6, 8, 10, 12, 14, 16]
+  # The first N prose tokens of a chunk, and after every placeholder, are not scored: the model
+  # has no context there, so they look surprising even when correct.
+  boundary: 2
+  # A chunk with fewer scored tokens than this (almost all math / table) gets
+  # low_confidence: true: never flagged, left out of calibration. Its few tokens say too
+  # little about its quality.
+  min_scored_tokens: 10
+  # The calibration `ocrfix calibrate` writes: the per-language rule that turns scores into
+  # `flag`, the best tau, and the whole-chunk noise limit (`noise_chunk`). When the file
+  # exists every scored chunk gets a flag; null (or no file) = no flags. Score calibration
+  # inputs with --set score.calibration=null (and score.noise.remove=false): they must be
+  # measured as they are. Relative = to the folder you run the command from.
   calibration: data/calibration/calibration.yaml
-  noise:                              # random noise cut out of the text (stages/noise.py)
+
+  # Noise removal: garbage OCR left in the text (symbol runs, broken table leftovers, random
+  # letters) is cut out before correction, so the correction model never has to deal with it.
+  noise:
+    # Cut noise runs out of the text (true), or score the text as it is (false: for
+    # calibration inputs and the corpus' first scoring pass).
     remove: true
-    # a whole chunk whose bpc (after the word-level removal below) is above the calibration's
-    # noise_chunk threshold for its language (else "*") is dropped as noise (`calibrate` sets it
-    # above the highest bpc of real text, clean or damaged); math and tables stay
+    # After the word-level removal, a whole chunk whose bpc is still above the calibration's
+    # `noise_chunk` limit for its language (else its "*" limit) is dropped as noise: its text
+    # becomes just its placeholders (math and tables stay), status "noise", never corrected.
+    # `calibrate-noise-chunk` sets the limits from your gold (the highest bpc of real text +
+    # a margin). Needs a calibration with noise_chunk; false = never drop whole chunks.
     whole_chunks: true
-    # bits per char of a whitespace-separated word, by the word's script (hangul if half its
-    # chars are Hangul, else other). A word above `core` starts a noise run, neighbours above
-    # `extend` join it; runs of >= min_chars non-space chars are removed (shorter: left to the
-    # corrector). `ocrfix calibrate-noise` fits the three on your gold chunks and rewrites them
-    # here (the line below says when, for which model, with what result). Fit again after
-    # switching models.
+    # How noise is found: each space-separated word gets its bits per character, judged by its
+    # script (hangul if at least half its characters are Hangul, else other; Korean is
+    # naturally more surprising per character, hence its own thresholds):
+    #   core       a word above this starts a noise run
+    #   extend     neighbouring words above this join the run
+    #   min_chars  runs with at least this many non-space characters are removed; shorter
+    #              ones are left to the correction model
+    # Higher thresholds / longer min_chars = less removed: safer for real text, more noise
+    # left. Words that are mostly Chinese / Japanese are never noise. `ocrfix calibrate-noise`
+    # fits all three on your gold (at most 1 real character in 10,000 removed:
+    # calibrate.noise.max_text_removed) and rewrites the three lines below, with a comment
+    # saying when, for which model, with what result. Fit again after switching models.
     # set by hand: vLLM, Qwen3.5-4B, generated test chunks
     min_chars: 20
     core: {hangul: 8.0, other: 5.0}

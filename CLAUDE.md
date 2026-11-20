@@ -85,22 +85,37 @@ takes `--profile NAME` and `--set key=value` (repeatable); most take `--limit N`
   `dpo` (dpo + train.dpo), `correct` (correct incl. correct.hf and correct.checks), `eval`, `reconstruct`.
 - **One place per setting:** a leaf key in two of default/stage files raises (`load_base`); a
   profile may only set `model` and `hw` (`PROFILE_KEYS`), else it raises naming the keys.
-- **Derived, never set twice:** `hw.infer.score_urls` null -> `http://host:base_port+i` for
-  `hw.infer.engines` (0.0.0.0 -> 127.0.0.1); `correct_urls` null -> score_urls when the base (or
-  an adapter on it) corrects, else `http://host:correct_port+i` (the `serve --correct` engines); relative `model`,
+- **Servers:** `hw.servers` = list of groups `{model: base|trained, host, gpus: all|[..],
+  memory?}` (base = `model`, trained = `correct.model`); `hw.infer` = `gpus_per_engine`,
+  `ports: {base, trained}`, `max_model_len`, `max_num_seqs`, `concurrency`. `server_plan(cfg)`
+  -> `EngineSpec`s in list order: one engine per `gpus_per_engine` GPUs of a group; port =
+  `ports[model]` + k, counted per (host, model); memory = the group's `memory`, else
+  `MEMORY_TOTAL` (0.88) / the number of groups on that host sharing its busiest GPU (two ->
+  0.44). Old keys (`OLD_INFER`: engines, tensor_parallel_size, gpu_memory_utilization, host,
+  base_port, correct_port) raise; `pipeline.both_memory` is gone.
+- **Derived, never set twice:** `_derive_servers`: `hw.infer.score_urls` null -> every base
+  engine's url (0.0.0.0 -> 127.0.0.1); `correct_urls` null -> every trained engine when
+  `correct.model` differs from the base and no adapter, else score_urls; `concurrency` null ->
+  max(len urls) x max_num_seqs. An explicit url list is an advanced override (load balancer,
+  test fakes), never in profiles. Relative `model`,
   `correct.model`, `correct.adapter` resolve against cwd then the project root. The tokenizer and
   scorer are `model`. Served names (`served_name`): the base is `base`, `correct.adapter` is
   `adapter`, a `correct.model` other than the base is `tuned`; `ocrfix serve` uses the same, so
   no name settings exist. `correct_model(cfg)` = correct.model or the base. One `seed` (splits,
   damage, sampling, request seed).
-- **`ocrfix serve [--correct] [--port P] [--engines N] [--gpus 0,1] [--memory F] [--dry-run]
-  [-- vllm args]`** (`serve.py`): one `vllm serve` per engine (GPU group i, port base_port + i,
-  `--served-model-name`, host, dtype, tp, max_model_len, gpu_memory_utilization, max_num_seqs,
-  prefix caching, seed, `--attention-backend` from `hw.vllm_attention_backend` or
-  `OCRFIX_ATTENTION_BACKEND`); `correct.adapter` adds `--enable-lora --lora-modules
-  adapter=<dir> --max-lora-rank <adapter r>`; `--correct` serves `correct.model` as `tuned` on
-  `correct_port` + i (refused when unset). Offline env vars passed on; logs `<work_dir>/vllm/<name>-<port>.log`;
-  waits for every `/health`, then until one exits or Ctrl-C/SIGTERM, then stops all.
+- **`ocrfix serve [--only base|trained] [--host ADDR] [--dry-run] [-- vllm args]`**
+  (`serve.py`): every `server_plan` engine whose host is this machine (`local_specs`: loopback
+  or `my_addresses()`, plus `--host` when detection fails), both kinds in one command; one
+  `vllm serve` per engine (`CUDA_VISIBLE_DEVICES` = its GPUs, `--served-model-name`, host,
+  port, dtype, tp = len(gpus), max_model_len, the engine's memory, max_num_seqs, prefix
+  caching, seed, `--attention-backend` from `hw.vllm_attention_backend` or
+  `OCRFIX_ATTENTION_BACKEND`); base engines get `correct.adapter` as `--enable-lora
+  --lora-modules adapter=<dir> --max-lora-rank <adapter r>`; trained engines serve
+  `correct.model` as `tuned`. No `correct.model`: trained groups skipped with a note
+  (`--only trained`: error); no local group: error naming the hosts. Several machines = the
+  same profile on each, `./ocrfix serve` on each (`cluster.yaml.example`). Offline env vars
+  passed on; logs `<work_dir>/vllm/<name>-<port>.log`; waits for every `/health`, then until
+  one exits or Ctrl-C/SIGTERM, then stops all.
 - **Scripts are Python:** `scripts/make_wheelhouse.py`, `install_offline.py`,
   `build_causal_conv1d.py` (stdlib only), `make_test_corpus.py`. `ocrfix train` re-execs under
   torchrun when `hw.n_gpus > 1` and sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
@@ -114,11 +129,13 @@ Each step runs as `python -X utf8 -m ocrfix ...` with the pipeline's `--profile`
 then the step's own sets (so they win); output shown and logged to
 `<pipeline.data_dir>/pipeline_logs/NN-name.log`. A step with an existing `done` file is
 skipped (`--redo` ignores that); resumable commands (markup, chunk, score, correct) always
-run. `Servers.need(step)`: with vllm backends starts `serve` (base) and `serve --correct`
-(trained, `correct.model` = step.tuned) as subprocesses and waits for every url's `/health`;
-when both run and the profile gives an engine > 0.5 memory, base restarts at
-`pipeline.both_memory[0]` and tuned starts at `[1]`; a different tuned model restarts tuned;
-`free` (training) stops all; engines already healthy before are used, never stopped. No
+run. `Servers.need(step)`: with vllm backends starts this machine's groups as subprocesses,
+`serve --only base` and `serve --only trained --set correct.model=<step.tuned>`, and waits
+for every url of that kind's `/health`; never starts other machines' groups (one of them
+down -> stops, saying to run `./ocrfix serve --only <kind>` there). No memory restarts
+(memory is per group from `server_plan`); a different tuned model restarts trained; `free`
+(training) stops all (warns about healthy local engines it didn't start); engines already
+healthy before are used, never stopped. No
 servers with transformers backends. Tested on CPU end to end (tiny model, transformers);
 the vLLM start/stop sequence only by unit test (`tests/test_pipeline.py`).
 
@@ -197,9 +214,9 @@ shards; `--limit` counts shards). Details in the `stages/run.py` docstring.
   not scored. Writes `score` (features as in Score, plus `n_tokens`), `flag` (calibration, else
   null) and `status: scored` (or `score_error` + `error`).
 - **Backend choice:** `score.backend` / `correct.backend` default `auto`, resolved by
-  `config._resolve_backends` after `_derive_urls`: `vllm` if the profile's `score_urls` /
-  `correct_urls` are non-empty (engines > 0 or addresses listed), else `transformers` (the
-  cpu profile). One engine per machine, so scores stay comparable; `--set` forces either.
+  `config._resolve_backends` after `_derive_servers`: `vllm` if the derived `score_urls` /
+  `correct_urls` are non-empty (a group in `hw.servers`), else `transformers` (the cpu
+  profile, `servers: []`). One engine per machine, so scores stay comparable; `--set` forces either.
 - **Backends** (`score.backend`): `vllm` = POST `/v1/completions` with prompt = `[eos] + ids`,
   `prompt_logprobs: 0`, `max_tokens: 1` (`score.parse_prompt_logprobs`; vLLM skips the prefix
   cache for such requests), round-robin over `hw.infer.score_urls`, model `base`

@@ -1,39 +1,100 @@
-# Single RTX 5090 (32 GB, Blackwell sm_120).
-# FlashAttention 2/3 wheels are not reliable on sm_120 -> use PyTorch SDPA.
-model: Qwen3.5-4B   # the 4B copied into the project folder (relative = project root)
+# =============================================================================================
+# Profile rtx5090: one RTX 5090 (32 GB, Blackwell sm_120), the 4B model.
+# =============================================================================================
+# A profile describes ONE machine: where the model is (`model`) and how to use its hardware
+# (`hw`). Nothing else may be set here (the stage files hold everything else). Pick it with
+# --profile rtx5090 or OCRFIX_PROFILE=rtx5090 (put that in ~/.bashrc on this machine).
+# This file is the reference: every machine setting is explained here; the other profiles
+# only explain what differs. Check the result: ./ocrfix config --profile rtx5090 --key hw
+# =============================================================================================
+
+# The base model folder (a local copy; never a hub name, the project is offline). Every step
+# uses it: its tokenizer counts tokens (chunk), it scores (score), it is what training starts
+# from. Relative = to the current folder, then the project folder.
+model: Qwen3.5-4B
 
 hw:
+  # Name of the profile (shown in logs and training metadata).
   name: rtx5090
+  # GPUs on this machine. Training starts one process per GPU (torchrun) when > 1; a server
+  # group's `gpus: all` means GPUs 0 .. n_gpus-1.
   n_gpus: 1
+  # Number format of the model weights on the GPU: bfloat16 (half the memory of float32, the
+  # standard for these GPUs).
   dtype: bfloat16
-  attn_impl: sdpa                     # transformers attn_implementation
-  vllm_attention_backend: FLASHINFER  # vllm serve --attention-backend
+  # Attention implementation for transformers (training, and the transformers backends).
+  # sdpa = PyTorch's built-in; FlashAttention 2/3 wheels are not reliable on sm_120.
+  attn_impl: sdpa
+  # Attention backend vLLM uses (`vllm serve --attention-backend`); FLASHINFER works on the
+  # 5090. Override for one run with OCRFIX_ATTENTION_BACKEND=TRITON_ATTN (empty = vLLM picks).
+  vllm_attention_backend: FLASHINFER
 
+  # ---- training (`train sft`, `train dpo`, `train merge`) -------------------------------------
   train:
-    mode: qlora                       # qlora | lora | full
-    per_device_batch_size: 2          # micro-batch; accumulation reaches train.effective_batch
+    # qlora  base loaded in 4 bits + LoRA adapters: least memory (needed for 32 GB)
+    # lora   base in bf16 + LoRA adapters: faster, more memory
+    # full   every weight trains: the most memory (a 9B needs ~150 GB: H200s only)
+    mode: qlora
+    # Sequences per GPU per step (the micro-batch). Out of memory: lower it; train.
+    # effective_batch (sft.yaml) stays the same, gradient accumulation goes up.
+    per_device_batch_size: 2
+    # Longest training example in tokens (prompt + answer); longer ones are dropped and
+    # counted, never cut. With chunk.max_tokens 768 the examples fit 2048.
     max_seq_len: 2048
+    # Recompute activations instead of storing them: much less memory, somewhat slower.
     gradient_checkpointing: true
-    optim: paged_adamw_8bit           # bitsandbytes
-    packing: false                    # packing Qwen3.5 needs fla + causal-conv1d
-    distributed: none                 # none | ddp | fsdp (auto: lora -> ddp, full -> fsdp)
+    # Optimizer. paged_adamw_8bit (bitsandbytes) keeps the optimizer state small for QLoRA.
+    optim: paged_adamw_8bit
+    # Pack several short examples into one sequence (faster). Needs the optional Qwen3.5
+    # kernels (flash-linear-attention + causal-conv1d); refused at start without them.
+    packing: false
+    # Multi-GPU method: none (one GPU) | ddp (a full copy per GPU, for LoRA) | fsdp (weights
+    # split over GPUs, for full) | auto (lora -> ddp, full -> fsdp).
+    distributed: none
 
-  infer:                              # vLLM: `ocrfix serve` starts the engines, score/correct use them
-    engines: 1                        # one per GPU (GPU i -> port base_port + i)
-    tensor_parallel_size: 1
-    gpu_memory_utilization: 0.90
+  # ---- model servers (`./ocrfix serve`; used by score / correct when the backend is vllm) ----
+  # One list of server groups describes every vLLM server the commands use. A group = one model
+  # on some GPUs of one machine:
+  #   model   base     the base model (`model`): scoring, re-scoring, and correcting while
+  #                    correct.model is null
+  #           trained  the correction model (correct.model, e.g. runs/sft_merged)
+  #   host    the machine's address. The servers listen on it and the commands send to it.
+  #           127.0.0.1 = this machine only; a LAN address (e.g. 10.0.0.11) lets other
+  #           machines reach it. The servers have no password: internal network only.
+  #   gpus    `all` (GPUs 0 .. n_gpus-1) or a list, e.g. [0, 1]. One engine per
+  #           hw.infer.gpus_per_engine GPUs.
+  #   memory  (optional) GPU memory share per engine. Automatic: groups on the same GPUs
+  #           share it (two groups: 0.44 each), a group alone gets 0.88.
+  # `./ocrfix serve` starts every group whose host is this machine (`--only base` /
+  # `--only trained` for one kind). Ports are automatic (hw.infer.ports, counted per machine).
+  # Here: both models share the one GPU; base on port 8100, trained on 8101.
+  # An empty list (servers: []) = no servers: the backends' `auto` then uses transformers.
+  servers:
+    - {model: base, host: 127.0.0.1, gpus: all}
+    - {model: trained, host: 127.0.0.1, gpus: all}
+
+  # How every server runs (the same for all groups).
+  infer:
+    # GPUs per engine (vLLM tensor parallelism). 1 = fastest when the model fits on one GPU
+    # (4B and 9B do); a group's GPUs are split into engines of this size.
+    gpus_per_engine: 1
+    # First port of each model's engines on each machine (8000 is taken by another app on
+    # this machine). Engine k of a model on a machine listens on ports[model] + k.
+    ports: {base: 8100, trained: 8101}
+    # Longest request in tokens (prompt + answer). A chunk (768) + its answer fits 4096.
     max_model_len: 4096
+    # Requests one engine works on at the same time. More = faster overall (until memory runs
+    # out), each request a little slower.
     max_num_seqs: 64
-    host: 127.0.0.1                   # the engines listen here: 127.0.0.1 = this machine only;
-                                      # the LAN address to serve other machines
-    base_port: 8100                   # engine i listens on base_port + i (8000 is a web app here)
-    correct_port: 8101                # the tuned engine (`serve --correct`), next to the base
-    concurrency: 64                   # requests in flight per kind (scoring, correction)
-    score_urls: null                  # servers for scoring; null = this machine's engines
-    correct_urls: null                # servers for correction; null = the base engines, or the
-                                      # tuned ones (correct_port) when correct.model is set
+    # Requests score / correct keep in flight, per kind. null = automatic: the number of
+    # engines x max_num_seqs (enough to keep every engine busy).
+    concurrency: null
 
+  # ---- scoring inside the command (score.backend: transformers) -------------------------------
   scorer:
-    # Set for the 9B (bf16 weights ~17 GB, ~6k tokens per forward peak ~20 GB); the 4B needs less.
-    max_batch_tokens: 6144            # tokens per forward (padded rows*width, or packed)
-    logits_chunk: 1024                # tokens per lm_head/cross-entropy chunk (fp32 logits)
+    # Tokens per forward pass (memory). Set for the 9B (bf16 weights ~17 GB, ~6k tokens peak
+    # ~20 GB); the 4B needs less. Out of memory: lower it.
+    max_batch_tokens: 6144
+    # Tokens per piece when computing the per-token surprise (the vocabulary is large, so the
+    # scores are computed in pieces). Lower = less memory.
+    logits_chunk: 1024

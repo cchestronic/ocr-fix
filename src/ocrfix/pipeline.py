@@ -16,13 +16,13 @@ commands does. Folders: ``pipeline.data_dir`` (data/real), ``pipeline.calibratio
   the steps that resume by themselves (markup, chunk, score, correct) always run and skip
   their finished files.
 - **Servers:** with ``score.backend`` / ``correct.backend`` = vllm, the stage starts the
-  engines a step needs (base; base + the trained model at ``pipeline.both_memory``), waits for
-  ``/health``, and stops them before training. Engines that already answer are used as they
-  are and never stopped. It starts engines only on **this machine** (urls at 127.0.0.1,
-  localhost or ``hw.infer.host``); engines on other servers (``score_urls`` /
-  ``correct_urls`` pointing elsewhere, e.g. several H200 servers) must already run: if one
-  doesn't answer, the stage stops and says what to start where. With the transformers
-  backends (``auto`` on a profile without engines, e.g. cpu) no server is started.
+  server groups (``hw.servers``) a step needs: the base groups for scoring, the trained groups
+  (serving the model the step names) for correcting; it waits for ``/health`` and stops them
+  before training. Memory is shared by the groups' own settings (automatic). Servers that
+  already answer are used as they are and never stopped. Only groups on **this machine** are
+  started; groups on other machines must already run: if one doesn't answer, the stage stops
+  and says what to start where. With the transformers backends (``auto`` on a profile with no
+  servers, e.g. cpu) no server is started.
 - **Logs:** every step's output is shown and kept in ``<data_dir>/pipeline_logs/``.
 - ``--dry-run`` prints the steps (and which are done) without running anything.
 """
@@ -383,74 +383,71 @@ def _healthy(url: str) -> bool:
 
 
 class Servers:
-    """The engines the steps need, started and stopped as `./ocrfix serve` processes."""
+    """The server groups (hw.servers) the steps need, started and stopped as `./ocrfix serve`
+    processes. Only groups on this machine are started; groups elsewhere must already run."""
 
     def __init__(self, cfg, profile: str | None, user_sets: list[str], log_dir: Path) -> None:
         self.cfg, self.profile, self.user_sets, self.log_dir = cfg, profile, user_sets, log_dir
-        p = cfg.pipeline
         self.use_vllm = {
             "score": str(cfg.score.backend) == "vllm",
             "correct": str(cfg.correct.backend) == "vllm",
         }
-        self.both_memory = [float(x) for x in p.both_memory]
-        self.timeout = float(p.ready_timeout)
-        self.procs: dict[str, tuple[subprocess.Popen, Any, str | None, list[str]]] = {}
+        self.timeout = float(cfg.pipeline.ready_timeout)
+        # kind (base | trained) -> (process or None if not ours, log, tuned model, urls)
+        self.procs: dict[str, tuple[subprocess.Popen | None, Any, str | None, list[str]]] = {}
 
     def _urls(self, kind: str, tuned: str | None) -> list[str]:
-        from ocrfix.config import load_config
+        """The engines of ``kind`` in hw.servers (trained: serving ``tuned``)."""
+        from ocrfix.config import load_config, server_plan
 
         sets = [*self.user_sets, *([f"correct.model={tuned}"] if tuned else [])]
-        cfg = load_config(self.profile, sets)
-        return list(cfg.hw.infer.score_urls if kind == "base" else cfg.hw.infer.correct_urls)
+        return [e.url for e in server_plan(load_config(self.profile, sets)) if e.model == kind]
 
-    def _start(self, kind: str, tuned: str | None, memory: float | None) -> None:
+    def _start(self, kind: str, tuned: str | None) -> None:
+        from ocrfix.serve import my_addresses
+
         urls = self._urls(kind, tuned)
+        if not urls:
+            return  # no group of this kind: the command loads the model itself (transformers)
         if all(_healthy(u) for u in urls):
-            print(f"[pipeline] {kind} engines already running at {urls[0]}: used as they are")
-            self.procs[kind] = (None, None, tuned, urls)  # type: ignore[assignment]
+            print(f"[pipeline] {kind} servers already running ({len(urls)}): used as they are")
+            self.procs[kind] = (None, None, tuned, urls)
             return
-        local = {"127.0.0.1", "localhost", "::1", "0.0.0.0", str(self.cfg.hw.infer.host)}
-        remote = sorted({_host(u) for u in urls if _host(u) not in local})
-        if remote:  # engines on other servers: this machine can't start them
-            down = [u for u in urls if not _healthy(u)]
-            what = (
-                "serve --correct --set correct.model=" + str(tuned) if kind == "tuned" else "serve"
-            )
+        mine = my_addresses()
+        down_remote = [u for u in urls if _host(u) not in mine and not _healthy(u)]
+        if down_remote:  # groups on other machines: this machine can't start them
+            what = f"serve --only {kind}" + (f" --set correct.model={tuned}" if tuned else "")
             raise RuntimeError(
-                f"{kind} engines on other servers don't answer: {', '.join(down)}. Start them "
-                f"there (`./ocrfix {what} --set hw.infer.host=<that server's address>`), check "
-                f"with `curl <url>/health`, then rerun the stage (finished steps are skipped)."
+                f"{kind} servers on other machines don't answer: {', '.join(down_remote)}. "
+                f"Start them there (`./ocrfix {what}`, same profile), check with "
+                "`curl <url>/health`, then rerun the stage (finished steps are skipped)."
             )
-        cmd = [sys.executable, "-X", "utf8", "-m", "ocrfix", "serve"]
-        if kind == "tuned":
-            cmd.append("--correct")
-        if memory is not None:
-            cmd += ["--memory", str(memory)]
+        cmd = [sys.executable, "-X", "utf8", "-m", "ocrfix", "serve", "--only", kind]
         if self.profile:
             cmd += ["--profile", self.profile]
         for s in [*self.user_sets, *([f"correct.model={tuned}"] if tuned else [])]:
             cmd += ["--set", s]
         log = (self.log_dir / f"serve-{kind}.log").open("a", encoding="utf-8")
-        print(f"[pipeline] starting {kind} engines ({' '.join(cmd[5:])}); log {log.name}")
+        print(f"[pipeline] starting {kind} servers ({' '.join(cmd[5:])}); log {log.name}")
         proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
         t0 = time.time()
         while not all(_healthy(u) for u in urls):
             if proc.poll() is not None:
                 raise RuntimeError(
-                    f"{kind} engines exited (code {proc.returncode}); see {log.name}"
+                    f"{kind} servers exited (code {proc.returncode}); see {log.name}"
                 )
             if time.time() - t0 > self.timeout:
                 proc.terminate()
-                raise RuntimeError(f"{kind} engines not ready after {self.timeout:.0f}s")
+                raise RuntimeError(f"{kind} servers not ready after {self.timeout:.0f}s")
             time.sleep(5)
-        print(f"[pipeline] {kind} engines ready ({time.time() - t0:.0f}s)")
+        print(f"[pipeline] {kind} servers ready ({time.time() - t0:.0f}s)")
         self.procs[kind] = (proc, log, tuned, urls)
 
     def _stop(self, kind: str) -> None:
         proc, log, _, _ = self.procs.pop(kind)
         if proc is None:
             return  # not ours
-        print(f"[pipeline] stopping {kind} engines")
+        print(f"[pipeline] stopping {kind} servers")
         proc.terminate()
         try:
             proc.wait(timeout=120)
@@ -462,13 +459,15 @@ class Servers:
         """Bring the servers to what ``step`` needs."""
         if step.needs == CPU:
             return
-        if step.needs == FREE:
-            local = {"127.0.0.1", "localhost", "::1", "0.0.0.0", str(self.cfg.hw.infer.host)}
+        if step.needs == FREE:  # training: this machine's GPUs to itself
+            from ocrfix.serve import my_addresses
+
+            mine = my_addresses()
             for kind in list(self.procs):
                 if self.procs[kind][0] is None:
-                    if any(_host(u) in local for u in self.procs[kind][3]):
+                    if any(_host(u) in mine for u in self.procs[kind][3]):
                         print(
-                            f"[pipeline] warning: {kind} engines you started on this machine "
+                            f"[pipeline] warning: {kind} servers you started on this machine "
                             "are still running; training may run out of GPU memory"
                         )
                     self.procs.pop(kind)
@@ -476,24 +475,13 @@ class Servers:
                     self._stop(kind)
             return
         want_base = self.use_vllm["score"] or (step.needs == BASE and self.use_vllm["correct"])
-        want_tuned = step.needs == BOTH and self.use_vllm["correct"]
-        split = want_base and want_tuned and float(self.cfg.hw.infer.gpu_memory_utilization) > 0.5
-        base_mem = self.both_memory[0] if split else None
-        if "tuned" in self.procs and (not want_tuned or self.procs["tuned"][2] != step.tuned):
-            self._stop("tuned")
-        if (
-            "base" in self.procs
-            and self.procs["base"][0] is not None
-            and want_tuned
-            and split
-            and getattr(self, "_base_mem", None) != base_mem
-        ):
-            self._stop("base")  # restart at half memory, to make room for the trained model
+        want_trained = step.needs == BOTH and self.use_vllm["correct"] and bool(step.tuned)
+        if "trained" in self.procs and (not want_trained or self.procs["trained"][2] != step.tuned):
+            self._stop("trained")
         if want_base and "base" not in self.procs:
-            self._start("base", None, base_mem)
-            self._base_mem = base_mem
-        if want_tuned and "tuned" not in self.procs:
-            self._start("tuned", step.tuned, self.both_memory[1] if split else None)
+            self._start("base", None)
+        if want_trained and "trained" not in self.procs:
+            self._start("trained", step.tuned)
 
     def stop_all(self) -> None:
         for kind in list(self.procs):

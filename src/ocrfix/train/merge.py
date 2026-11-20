@@ -10,7 +10,7 @@ Base weights for the merge:
     Either way a warning is logged.
   - lora / full: merged into the ``hw.dtype`` base directly.
 The output is a plain bf16 safetensors checkpoint (no quantization_config) plus tokenizer
-and generation config: ``ocrfix serve --correct --set correct.model=<out>`` serves it.
+and generation config: ``ocrfix serve --set correct.model=<out>`` serves it (trained groups).
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ def merge(
     if meta.get("mode") == "full" or not (Path(adapter) / "adapter_config.json").is_file():
         raise ValueError(
             f"{adapter} is not a LoRA adapter (full fine-tune?): it is already a complete model; "
-            "serve it directly: ocrfix serve --correct --set correct.model=<dir>"
+            "serve it directly: ocrfix serve --set correct.model=<dir>"
         )
     quantized = bool(meta.get("quantized_base", False))
     dequantize = quantized if dequantize is None else dequantize

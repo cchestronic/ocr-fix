@@ -1,42 +1,84 @@
-# SFT: the training data (`ocrfix data sft`) and the training run (`ocrfix train sft`, `train
-# merge`). `train:` holds the settings SFT and DPO share (DPO's own are train.dpo, in dpo.yaml).
-# Micro-batch, sequence length, QLoRA/LoRA/full and the optimizer are the machine's: hw.train.
+# =============================================================================================
+# sft.yaml: `ocrfix data sft` (the training data) and `ocrfix train sft` / `train merge`.
+# =============================================================================================
+# SFT (supervised fine-tuning) teaches the model: damaged chunk in -> corrected chunk out,
+# with the exact prompt `correct` sends. `train:` holds the training settings SFT and DPO
+# share; DPO's own are `train.dpo` in dpo.yaml. Batch per GPU, sequence length, QLoRA / LoRA /
+# full and the optimizer depend on the machine: they are `hw.train` in the profile.
+# =============================================================================================
 
-sft:                                  # `ocrfix data sft` (stages/data.py)
-  mix: {synthetic: 0.6, gold: 0.2, identity: 0.2}   # renormalized over the sources given;
-                                      # identity: clean chunks returned unchanged
-  gold_repeats: 2                     # each gold chunk this many times
-  lang_balance: null                  # e.g. {ko: 0.5, en: 0.35, mixed: 0.15}; null = as found
-  total: null                         # null = as many as the mix allows without reuse
-  val_frac: 0.02                      # validation share, by document
-  # put "<think>\n\n</think>\n\n" before each answer. Not needed for Qwen3.5: with thinking
-  # off its chat template adds that block itself. `train` checks either way.
+sft:                                  # `ocrfix data sft` (src/ocrfix/stages/data.py)
+  # Where the examples come from, as shares (rescaled over the sources you pass):
+  #   synthetic  fake-damaged clean chunks (`corrupt`) -> the clean chunk: most of the data
+  #   gold       your real OCR chunks (gold sft side) -> your corrected truth: real errors
+  #   identity   clean chunks -> themselves: teaches the model to leave good text alone
+  #              (fewer false fixes)
+  # More gold if you have it (the most realistic); keep some identity.
+  mix: {synthetic: 0.6, gold: 0.2, identity: 0.2}
+  # Each gold chunk is used this many times (gold is scarce and the most valuable).
+  gold_repeats: 2
+  # Share per chunk language, e.g. {ko: 0.5, en: 0.35, mixed: 0.15}; null = as found in the
+  # data. Use it when one language is rare in the data but common in the corpus.
+  lang_balance: null
+  # Total examples. null = the most the mix allows without using a chunk twice; a number caps
+  # it (training time grows with it).
+  total: null
+  # Share of documents held out as validation (val.jsonl), by document, so no chunk of a
+  # validation paper is trained on.
+  val_frac: 0.02
+  # Put an empty "<think>\n\n</think>\n\n" before each answer. Not needed for Qwen3.5: with
+  # thinking off its chat template adds that block itself. `train` checks either way and
+  # stops if the data and the template disagree.
   empty_think: false
-  junk:                               # short junk added to synthetic inputs, dropped in the target
-    prob: 0.3                         # share of synthetic chunks that get junk
-    max_runs: 3                       # 1..max_runs per chunk
-    chars: [3, 30]                    # non-space chars per run (noise removal takes >= 20 only)
-    own_line: 0.2                     # share of runs inserted as their own paragraph
+  # Short junk added to some synthetic inputs (symbols, `lI1`-like letters, random Hangul) and
+  # left out of the target: the model learns to drop the junk that noise removal leaves
+  # (runs shorter than score.noise.min_chars).
+  junk:
+    # Share of synthetic examples that get junk.
+    prob: 0.3
+    # 1..max_runs junk runs per example.
+    max_runs: 3
+    # Non-space characters per run (from, to).
+    chars: [3, 30]
+    # Share of runs inserted as their own paragraph (the rest after a sentence end).
+    own_line: 0.2
 
-train:                                # `ocrfix train sft|dpo|merge`
-  effective_batch: 32                 # sequences per optimizer step; grad accumulation derived
+train:                                # `ocrfix train sft|dpo` (src/ocrfix/train/)
+  # Sequences per optimizer step over all GPUs. Gradient accumulation is derived:
+  # effective_batch / (hw.train.per_device_batch_size x GPUs), rounded up. Changing the
+  # micro-batch for memory keeps this, so the training behaves the same.
+  effective_batch: 32
+  # Learning rate (for LoRA / QLoRA; a full fine-tune usually needs a much lower one).
   lr: 1.0e-4
+  # Share of the steps (< 1) or number of steps (>= 1) spent ramping the learning rate up.
   warmup_ratio: 0.03
+  # Learning-rate shape after warm-up (cosine: down to ~0 at the end).
   scheduler: cosine
   weight_decay: 0.0
+  # Gradients are clipped to this norm (stability).
   max_grad_norm: 1.0
-  group_by_length: true               # unpacked runs: batch similar lengths (less padding)
-  eval_frac: 0.02                     # held-out slice of the training file when no --eval file
-  max_eval: 500                       # cap on held-out examples
+  # Batch examples of similar length together (less padding, faster) when not packing.
+  group_by_length: true
+  # Held-out share of the training file when no --eval file is given (by example id).
+  eval_frac: 0.02
+  # At most this many held-out examples (evaluation time).
+  max_eval: 500
+  # Evaluate every N steps; save a checkpoint every N steps; log every N steps.
   eval_steps: 200
   save_steps: 500
   logging_steps: 10
+  # LoRA: small trainable matrices added to the frozen model (modes lora / qlora).
   lora:
+    # Rank: capacity of the adapter. Higher = learns more, more memory and time.
     r: 32
+    # Scale of the adapter's effect (usually 2 x r).
     alpha: 64
     dropout: 0.05
-    # attention + MLP; Qwen3.5's Gated DeltaNet layers: in_proj_qkv/z/a/b, out_proj
+    # Which layers get an adapter: attention + MLP, and Qwen3.5's Gated DeltaNet layers.
+    # Names missing in the model are skipped with a log line.
     target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj,
                      in_proj_qkv, in_proj_z, out_proj]
   sft:
+    # Passes over the training data. More = better fit, more risk of overfitting (watch the
+    # eval loss); --max-steps N stops earlier.
     epochs: 2

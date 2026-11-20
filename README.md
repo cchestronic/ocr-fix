@@ -120,16 +120,16 @@ The model is used in three ways, and each has its own engine:
   tokens); they never load the weights.
 
 Two settings choose between vLLM and transformers for using the model. Both default to
-**`auto`: the machine decides.** A profile with servers (`hw.infer.engines` > 0, or server
-addresses in `score_urls` / `correct_urls`: the 5090 and H200 profiles) gets `vllm`; a
-profile without (`cpu`, this PC) gets `transformers`. So every command on one machine uses
+**`auto`: the machine decides.** A profile with servers (a non-empty `hw.servers` list: the
+5090 and H200 profiles) gets `vllm`; a profile without (`servers: []`: `cpu`, this PC) gets
+`transformers`. So every command on one machine uses
 the same engine, the scores stay comparable, and you never type it. Check with
 `./ocrfix config --key score.backend`.
 
 | setting | decides how ... | `vllm` | `transformers` |
 |---|---|---|---|
-| `score.backend` | the **base** model scores text (how surprising each token is) | requests to the base servers (`hw.infer.score_urls`) | the base model loaded in the command, on GPU 0 (or CPU) |
-| `correct.backend` | the **correction** model writes answers | requests to the correction servers (`hw.infer.correct_urls`) | `correct.model` loaded in the command, on GPU 0 (or CPU) |
+| `score.backend` | the **base** model scores text (how surprising each token is) | requests to the base servers (the `model: base` groups of `hw.servers`) | the base model loaded in the command, on GPU 0 (or CPU) |
+| `correct.backend` | the **correction** model writes answers | requests to the correction servers (the `model: trained` groups; the base ones while `correct.model` is not set) | `correct.model` loaded in the command, on GPU 0 (or CPU) |
 
 Every command:
 
@@ -148,8 +148,8 @@ Every command:
 
 What that means in practice:
 
-- **GPU machine (auto = vllm):** start `./ocrfix serve` (and `serve --correct` for the
-  trained model) before the scoring / correcting steps, and stop them before training
+- **GPU machine (auto = vllm):** start `./ocrfix serve` (base and, with `correct.model` set,
+  trained model in one command) before the scoring / correcting steps, and stop them before training
   (training needs the GPU memory). `./ocrfix pipeline` does that for you.
 - **This PC (auto = transformers):** nothing to start; every command loads the model itself.
   Nearly the same results, slower (measured on the RTX 5090: scoring ~2x, correction 4-8x),
@@ -160,8 +160,8 @@ What that means in practice:
 - **Same model, same scores:** `compare` checks that vLLM and transformers agree (on the
   5090: flags 99.6% equal, greedy answers 100%). Calibrate with the backend you will use.
 - Which machine: the "no model" and "tokenizer only" commands run anywhere (this PC
-  included); the rest need a GPU machine, or its servers over the network (section 10, "A
-  CPU server + GPU servers"), or patience on CPU with transformers.
+  included); the rest need a GPU machine, or its servers over the network (section 10,
+  setups 2 and 3), or patience on CPU with transformers.
 
 ## 3. Install
 
@@ -204,7 +204,7 @@ data/real/
 
 How to write the truth files: [docs/annotation_guideline.md](docs/annotation_guideline.md).
 More gold gives better error rates and a more reliable eval (20% of it is kept for eval
-only). No real data yet? Generate test data (section 11).
+only). No real data yet? Generate test data (section 12).
 
 ---
 
@@ -248,16 +248,17 @@ exists, and stops after each stage so you can check the results before spending 
 | `pipeline.model` | null | the corpus stage's correction model; null = `runs/dpo_merged` with DPO, else `runs/sft_merged` |
 | `pipeline.max_steps` | null | stop training after N steps (quick tests) |
 | `pipeline.write_noise` | true | calibrate-noise writes its thresholds into `configs/stages/score.yaml` |
-| `pipeline.both_memory` | [0.44, 0.42] | GPU memory of the base / trained servers when both run |
 | `pipeline.ready_timeout` | 1800 | seconds to wait for the servers to start |
 
-- **Servers:** a step that scores starts the base model; a step that corrects with the
-  trained model also starts it (each with about half the GPU); training stops them first.
-  Servers you started yourself are used and left running.
-- **Several GPU servers:** the pipeline starts servers only on the machine it runs on. Servers
-  on other machines (the addresses in `hw.infer.score_urls` / `correct_urls`, section 10 "A
-  CPU server + GPU servers") you start yourself, once, on each of them; the pipeline then just
-  uses them. If one doesn't answer, the stage stops and prints what to start where. Training
+- **Servers:** a step that scores starts this machine's base groups (`serve --only base`); a
+  step that corrects with the trained model also starts the trained groups (`serve --only
+  trained --set correct.model=...`); training stops them first. GPU memory is set per group
+  (`hw.servers`, section 10), so nothing restarts when the second model joins. Servers you
+  started yourself are used and left running.
+- **Several GPU servers:** the pipeline starts servers only on the machine it runs on. Groups
+  of `hw.servers` on other machines (section 10, setup 3) you start
+  yourself, once, on each of them (`./ocrfix serve`); the pipeline then just uses them. If one
+  doesn't answer, the stage stops and says to run `./ocrfix serve --only <kind>` there. Training
   (`train` stage) runs on the machine the pipeline runs on, using its GPUs: run that stage on
   a GPU server. On a machine without servers (this PC: the backends are `auto` =
   transformers) no server is started: slow, but it works.
@@ -339,6 +340,8 @@ In a terminal of its own, leave it running:
 ./ocrfix serve                       # the base model; wait until it prints "ready"
 ```
 
+This starts this machine's groups of `hw.servers` (section 10). Without
+`correct.model` only the base model starts (the trained groups are skipped with a note).
 `score`, `correct`, `calibrate-noise`, `calibrate-noise-chunk` and `data dpo` send requests to
 these servers. Stop them (Ctrl-C in that terminal) before training: training needs the whole
 GPU.
@@ -407,14 +410,14 @@ Stop the servers first.
 
 ### B7. Optional: DPO (a second round on the model's own mistakes)
 
-Two servers, each in a terminal of its own, each with about half the GPU:
+Start the base and the SFT model in one terminal (one command starts both; on shared GPUs
+each gets about half the memory, automatically):
 
 ```bash
-./ocrfix serve --memory 0.44
-./ocrfix serve --correct --memory 0.42 --set correct.model=runs/sft_merged
+./ocrfix serve --set correct.model=runs/sft_merged
 ```
 
-Then:
+Then, in another terminal:
 
 ```bash
 ./ocrfix corrupt data/real/chunks_clean data/real/errors/error_table.json data/real/errors/confusion_map.json data/real/train/corrupt_dpo.jsonl --set seed=7
@@ -433,7 +436,8 @@ every prompt. If you do it, use `runs/dpo_merged` instead of `runs/sft_merged` b
 
 ### B8. Measure: `score` + `correct` + `eval` on the gold eval documents
 
-Servers as in B7 (base + `--correct`), then:
+Servers as in B7 (`./ocrfix serve --set correct.model=runs/sft_merged`: base + trained),
+then:
 
 ```bash
 ./ocrfix score data/real/gold_chunks/eval data/real/eval/scored
@@ -450,7 +454,8 @@ Servers as in B7 (base + `--correct`), then:
 
 ## 8. Track C: correct the corpus (GPU)
 
-Servers as in B7 (base + `--correct`), then:
+Servers as in B7 (`./ocrfix serve --set correct.model=runs/sft_merged`: base + trained),
+then:
 
 ```bash
 ./ocrfix chunk data/real/corpus_fixed data/real/chunks
@@ -557,9 +562,9 @@ documents. `./ocrfix summary data/real/refined` shows how far it got.
 
 **Making `correct` shorter:**
 
-- **The right GPU split:** see section 10, "Scoring vs correcting: how many GPUs for each".
-- **More servers:** list every GPU server's address in `hw.infer.correct_urls` (section 10,
-  "A CPU server + GPU servers"); requests are spread over all of them. The main lever.
+- **The right GPU split:** see section 10, "How many GPUs for scoring vs correcting".
+- **More servers:** add every GPU server's groups to `hw.servers` (section 10,
+  setup 3); requests are spread over all of them. The main lever.
 - **Fewer flags:** a lower `calibrate.max_false_flag` (default 0.05) flags fewer borderline
   chunks: `calibrate` again, then score pass 2 again. Check on the gold (B4b) what it misses.
 - **Measure first:** `--sample-frac 0.01` on `chunk` (into another folder) runs the whole
@@ -587,7 +592,7 @@ command line. Every command also takes `--profile`, `--set`, and most `--limit`.
 
 | command | input | output | main settings |
 |---|---|---|---|
-| `serve [--correct]` | the profile, `model` (or `correct.model` with `--correct`) | running vLLM servers (no files); logs in `runs/vllm/` | `hw.infer.engines`, `tensor_parallel_size`, `gpu_memory_utilization` / `--memory`, `--gpus`, ports (section 10, Parallelism) |
+| `serve [--only base\|trained]` | the profile: this machine's groups of `hw.servers` (`model`, and `correct.model` for trained groups) | running vLLM servers (no files); logs in `runs/vllm/` | `hw.servers` (model, host, gpus, memory), `hw.infer.gpus_per_engine`, `ports`, `max_num_seqs`; `--host`, `--dry-run` (section 10) |
 | `calibrate-noise <gold_chunks> [out]` | gold chunks (sft + dpo) | `noise_report.json`; writes `score.noise.core` / `extend` / `min_chars` into `configs/stages/score.yaml` (`--no-write`: report only) | `calibrate.noise.max_text_removed` (1 in 10,000 real chars), `calibrate.noise.min_chars`, `insert_runs`, `insert_chars` |
 | `score <chunks> <out>` | `<chunks>` (from `chunk`, `corrupt` or `gold chunks`) | the same rows + `score` (bpc, p90, spike_frac, ...), `flag` (damaged?), noise removed (`history`), `status`; `score_stats.json` | `score.backend` (vllm / transformers), `score.calibration` (null = no flags), `score.noise.remove`, `score.noise.whole_chunks`, `score.noise.core` / `extend` / `min_chars` |
 | `calibrate <clean> <damaged> <out> [--gold-scores g]` | scored clean chunks, scored damaged chunks [, scored gold sft chunks] | `calibration.yaml` (flag rule per language), `summary.md`, `report.json`, PNGs | `calibrate.max_false_flag` (0.05), `target_recall` (0.9), `recall_on` (`table`), `min_rows` (50), `gold_noisy_cer` (0) |
@@ -614,14 +619,191 @@ command line. Every command also takes `--profile`, `--set`, and most `--limit`.
 
 ---
 
-## 10. Settings
+## 10. GPU servers (vLLM)
+
+### How it works
+
+On a GPU machine the model runs as **vLLM servers**: programs that keep the model on a GPU and
+answer requests over the network. `score` sends text to be scored, `correct` sends chunks to be
+rewritten. There are two kinds of server:
+
+| kind | model | used by |
+|---|---|---|
+| `base` | the base model (`model` in the profile) | scoring, re-scoring each correction, and correcting while `correct.model` is null |
+| `trained` | the correction model (`correct.model`, e.g. `runs/sft_merged`) | `correct`, `data dpo` |
+
+**One list in the profile, `hw.servers`, describes every server.** Each line is a *group*: one
+kind of model on some GPUs of one machine. Everything else follows from that list:
+
+- `./ocrfix serve` on a machine starts the groups listed for **that** machine, both kinds in one
+  command.
+- `score` / `correct` send their requests to **every** group of the right kind, on every machine
+  in the list, spread evenly.
+- Ports and GPU memory are set automatically. Each GPU runs one copy of the model per group
+  ("engine").
+
+```yaml
+# configs/profiles/h200x8.yaml
+hw:
+  servers:
+    - {model: base,    host: 10.0.0.20, gpus: all}   # base model on all 8 GPUs
+    - {model: trained, host: 10.0.0.20, gpus: all}   # trained model on the same 8 GPUs
+```
+
+That gives 8 base engines (ports 8000–8007) and 8 trained engines (8100–8107). Both kinds share
+every GPU, so each engine gets 0.44 of the GPU memory.
+
+### Setup 1: one GPU machine (the profiles as shipped)
+
+Nothing to change. On the machine:
+
+```bash
+./ocrfix serve --set correct.model=runs/sft_merged      # starts base + trained
+./ocrfix serve                                           # before training: base only
+```
+
+Without `correct.model` (nothing trained yet), `serve` starts only the base servers and says
+so. `./ocrfix pipeline` starts and stops these servers itself; you only start them by hand for
+single commands. Stop them with Ctrl-C (training needs the GPU memory).
+
+### Setup 2: the commands on another machine (a CPU server)
+
+The servers must listen on the GPU machine's **network address**: `127.0.0.1` refuses other
+machines. Use the GPU machine's profile on **both** machines (e.g. `h200x8`: on the CPU machine
+too, `export OCRFIX_PROFILE=h200x8`), with `host` set to the GPU machine's address:
+
+```yaml
+  servers:
+    - {model: base,    host: 10.0.0.11, gpus: all}
+    - {model: trained, host: 10.0.0.11, gpus: all}
+```
+
+- GPU machine: `./ocrfix serve --set correct.model=/models/ocrfix-sft-merged`
+- CPU machine: run the commands as usual (`./ocrfix score ...`, `./ocrfix correct ...`); they
+  send to `10.0.0.11`. It needs the project, the data, and the model's small files
+  (`config.json`, tokenizer files) at the same path, not the weights.
+- Check from the CPU machine: `curl http://10.0.0.11:8000/health`
+
+### Setup 3: several GPU servers
+
+Make **one profile file that lists every server's groups**, and copy it to every machine
+(`configs/profiles/cluster.yaml.example` is a worked example; copy it to `cluster.yaml`).
+
+```yaml
+  servers:
+    - {model: base,    host: 10.0.0.11, gpus: [0, 1]}               # gpu1: 2 GPUs base
+    - {model: trained, host: 10.0.0.11, gpus: [2, 3, 4, 5, 6, 7]}   # gpu1: 6 GPUs trained
+    - {model: trained, host: 10.0.0.12, gpus: all}                  # gpu2: 8 GPUs trained
+    - {model: trained, host: 10.0.0.13, gpus: all}                  # gpu3: 8 GPUs trained
+```
+
+1. On **each** GPU server, the same command (it starts that server's lines only):
+   ```bash
+   ./ocrfix serve --set correct.model=/models/ocrfix-sft-merged
+   ```
+2. Anywhere (a CPU server or gpu1): run the commands as usual. Here scoring is spread over 2
+   base engines and correcting over 6 + 8 + 8 = 22 trained engines.
+
+Rules:
+
+- **Same file everywhere**, with every machine's lines. Each line's `host` is the address of
+  the machine that runs it.
+- `correct.model` must be the **same path on every machine** (copy the merged model to each).
+  Best: set it in `configs/stages/correct.yaml`; then just `./ocrfix serve`.
+- `./ocrfix pipeline` **uses** servers on other machines but never starts or stops them: start
+  them by hand. If one doesn't answer, the stage stops and says which one.
+- **Training** runs on one machine at a time (all its GPUs), the one the pipeline or
+  `train` command runs on. Stop that machine's servers first.
+- The servers have no password: internal network addresses only; the firewall must let the
+  command machine reach ports 8000+ and 8100+ on the GPU servers.
+
+### Settings
+
+A group in `hw.servers`:
+
+| key | what it is | example |
+|---|---|---|
+| `model` | `base` or `trained` | `base` |
+| `host` | the address of the machine that runs it. The servers listen on it, the commands send to it. `127.0.0.1` = this machine only | `10.0.0.11` |
+| `gpus` | `all` (GPUs 0 .. `hw.n_gpus` − 1) or a list | `[0, 1]` |
+| `memory` | optional. Automatic: groups on the same GPUs share 0.88 (two groups: 0.44 each); a group alone gets 0.88 | `0.6` |
+
+How every server runs, `hw.infer` in the profile:
+
+| setting | what it does | 5090 | H200 ×8 |
+|---|---|---|---|
+| `gpus_per_engine` | GPUs per copy of the model. 1 = fastest when the model fits on one GPU (4B, 9B do) | 1 | 1 |
+| `ports` | first port of each kind on each machine; the k-th engine of a kind on a machine uses `ports[kind] + k` | base 8100, trained 8101 | base 8000, trained 8100 |
+| `max_num_seqs` | requests one engine works on at once | 64 | 256 |
+| `max_model_len` | longest request in tokens (a chunk and its answer fit easily) | 4096 | 8192 |
+| `concurrency` | requests `score` / `correct` keep in flight. null = automatic (engines × `max_num_seqs`) | null → 64 | null → 2048 |
+
+Shipped profiles: `rtx5090` (both kinds on its one GPU, `127.0.0.1`), `h200x4` (both on all 4
+GPUs, `127.0.0.1`), `h200x8` (both on all 8, `host: 10.0.0.20`: change it to the server's
+address), `cpu` (`servers: []`: no servers, the model runs inside each command).
+
+### How many GPUs for scoring vs correcting
+
+*What each costs.* Scoring *reads* a chunk: all ~700 tokens in one pass. Correcting *writes*
+it again, one token per model step; vLLM works on many chunks at once (`max_num_seqs`), so each
+step writes a token for all of them. Measured on the RTX 5090 (4B): scoring ~20,700 tokens/s,
+generating ~3,300 tokens/s (only 16 at a time, sharing the GPU with the scoring server). So
+one flagged chunk costs `correct` about 8 times what scoring it costs:
+
+| work per flagged chunk | kind | cost (1 = scoring that chunk once) |
+|---|---|---|
+| read the prompt | trained | ~1 |
+| write the answer (~700 tokens) | trained | ~6 |
+| re-score the answer | base | ~1 |
+
+With half the chunks flagged, `correct` takes about as long as the two scoring passes
+together, or up to twice that: the longest step, but not hundreds of times longer.
+
+*Who needs GPUs when.* Scoring needs only base servers; `correct` needs trained (~85–90% of the
+work) and base (~10–15%, the re-score).
+
+- **Share every GPU (the default and the recommendation).** Both kinds on `gpus: all`, 0.44
+  memory each. A GPU's compute goes to whichever server has work, so the balance adjusts by
+  itself. Half the memory is plenty for a 9B (~18 GB) on a 141 GB H200, tighter on the 32 GB
+  5090 (tested there).
+- **Or give each kind its own GPUs**, about **1 base : 7 trained**; each then gets 0.88 of its
+  GPUs. Only worth it if sharing runs out of memory:
+  ```yaml
+  servers:
+    - {model: base,    host: 127.0.0.1, gpus: [0]}
+    - {model: trained, host: 127.0.0.1, gpus: [1, 2, 3, 4, 5, 6, 7]}
+  ```
+- **Check on the real machine** (the 1 : 7 is an estimate from the 5090):
+  - `nvidia-smi` during `correct`: GPUs that only hold base servers and sit near 0% → too
+    many GPUs for base.
+  - each server's log (`runs/vllm/<name>-<port>.log`) shows requests *Running* and *Waiting*:
+    a long Waiting queue on the trained servers and none on base → move GPUs to trained.
+  - `refined/correct_stats.json` records tokens/s: compare layouts on a 1% sample
+    (`--sample-frac 0.01` on `chunk`).
+
+### Checking and troubleshooting
+
+| what | how |
+|---|---|
+| what `serve` would start here | `./ocrfix serve --dry-run --set correct.model=runs/sft_merged`: every server's GPU, port, memory; starts nothing |
+| where the commands will send requests | `./ocrfix config --key hw.infer.score_urls` / `hw.infer.correct_urls` |
+| is a server up | `curl http://<host>:<port>/health` |
+| "no server group of hw.servers is on this machine" | this machine's address isn't recognised: `./ocrfix serve --host <its address>` |
+| one kind only | `./ocrfix serve --only base` / `--only trained` (`--only trained` needs `correct.model`) |
+| extra vLLM options for every server | after `--`: `./ocrfix serve -- --enforce-eager` |
+| a server crashed or won't start | its log: `runs/vllm/<name>-<port>.log` |
+| no vLLM on a GPU machine | `--set score.backend=transformers --set correct.backend=transformers`: the model runs inside each command on one GPU (slower: scoring ~2×, correction 4–8× on the 5090; batch sizes `hw.scorer.max_batch_tokens`, `correct.hf.batch_size`) |
+
+---
+
+## 11. Settings
 
 ### Where they live
 
 | file | what you set there |
 |---|---|
 | `configs/default.yaml` | `seed` (every random choice), `work_dir`, language rules |
-| `configs/profiles/<machine>.yaml` | **the machine:** model path, GPUs, training mode and batch, vLLM servers (host, ports, memory). Only `model` and `hw` |
+| `configs/profiles/<machine>.yaml` | **the machine:** model path, GPUs, training mode and batch, vLLM servers (`hw.servers`: model, host, GPUs per group; `hw.infer`). Only `model` and `hw` |
 | `configs/stages/markup.yaml` | which LaTeX / table repairs `markup` makes; `workers` |
 | `configs/stages/chunk.yaml` | chunk size (`min_tokens` 512, `max_tokens` 768), files (`glob`), what is masked (`protect`) |
 | `configs/stages/gold.yaml` | gold split (`split.eval` 0.2, `split.dpo` 0.2), error-table options |
@@ -669,7 +851,9 @@ command line. Every command also takes `--profile`, `--set`, and most `--limit`.
 After switching model (4B → 9B), run B2 and B3+B4 again: scores belong to one model. To add a
 machine, copy a profile and change it ([docs/runbook.md](docs/runbook.md)).
 
-### Parallelism: CPU processes, GPUs, vLLM servers, training
+### Parallelism: CPU processes and training
+
+(GPU servers: section 10.)
 
 All of these are in the **profile** (`hw.*`, per machine) or a stage file. Change them for
 good in the YAML file, or for one run with `--set` (or the command's own option, shown).
@@ -685,90 +869,6 @@ good in the YAML file, or for one run with `--set` (or the command's own option,
   input (`chunk.shard_bytes`, 32 MB of Markdown): fewer shards than cores means idle cores, so
   for a small corpus lower `chunk.shard_bytes` (e.g. `--set chunk.shard_bytes=4194304`).
 - More processes than cores doesn't help; on a 50 GB corpus the disk may be the limit.
-
-**vLLM servers (`serve`): which GPUs, how many copies of the model**
-
-`./ocrfix serve` starts `hw.infer.engines` copies of the model ("engines"), each on
-`hw.infer.tensor_parallel_size` GPUs, on ports `base_port`, `base_port + 1`, ... `score`,
-`correct`, `data dpo` spread their requests over all engines.
-
-| setting (`hw.infer.`) | one run | what it does | 5090 | H200 ×8 |
-|---|---|---|---|---|
-| `engines` | `serve --engines N` | copies of the model; engine i uses the next `tensor_parallel_size` GPUs | 1 | 8 |
-| `tensor_parallel_size` | `--set hw.infer.tensor_parallel_size=2` | GPUs per engine; 1 = fastest when the model fits on one GPU (4B, 9B) | 1 | 1 |
-| — | `serve --gpus 4,5,6,7` | which GPUs (default: 0 .. engines × tp − 1) | | |
-| `gpu_memory_utilization` | `serve --memory 0.44` | share of each GPU's memory an engine takes | 0.90 | 0.45 |
-| `max_num_seqs` | `--set hw.infer.max_num_seqs=128` | requests one engine works on at once | 64 | 256 |
-| `max_model_len` | | longest request in tokens (a chunk + its answer fits easily) | 4096 | 8192 |
-| `concurrency` | `--set hw.infer.concurrency=256` | requests `score` / `correct` keep in flight in total; about engines × max_num_seqs | 64 | 1024 |
-| `base_port`, `correct_port` | `serve --port P` | first port of the base / the trained (`--correct`) engines | 8100 / 8101 | 8000 / 8100 |
-| `host` | | address the engines listen on (a LAN address to serve another machine) | 127.0.0.1 | LAN |
-
-- **Engines × tensor_parallel_size ≤ GPUs** (the profile is refused otherwise).
-- **Base + trained model at once** (B7, B8, track C need both): start both, each with about
-  half the memory, on the same GPUs:
-  ```bash
-  ./ocrfix serve --memory 0.44
-  ./ocrfix serve --correct --memory 0.42 --set correct.model=runs/sft_merged
-  ```
-  The H200 ×8 profile already sets 0.45 for that; with the whole GPU for one model, `--memory 0.9`.
-- **Some GPUs for serving, others for something else:**
-  `./ocrfix serve --engines 4 --gpus 0,1,2,3`.
-- **Check before starting:** `./ocrfix serve --dry-run ...` prints each engine's command
-  with its GPUs (`CUDA_VISIBLE_DEVICES=4 vllm serve ... --port 8000 ...`) and starts nothing.
-- Logs per engine: `runs/vllm/<name>-<port>.log`.
-- Without servers (a profile with `engines: 0`, or `--set score.backend=transformers` /
-  `--set correct.backend=transformers`) the model runs in the command's own process on one GPU: slower (measured on the 5090:
-  scoring about 2×, correction 4–8×). Their batch sizes:
-  `hw.scorer.max_batch_tokens` (tokens per forward pass) and `correct.hf.batch_size`
-  (sequences per generate call, halved automatically when memory runs out).
-
-**Scoring vs correcting: how many GPUs for each**
-
-*What each costs.* Scoring *reads* a chunk: all ~700 tokens in one pass. Correcting *writes*
-it again, one token per model step, and vLLM keeps many chunks in flight at once
-(`max_num_seqs`), so each step writes a token for all of them. Measured on the RTX 5090 (4B,
-vLLM): scoring ~20,700 tokens/s, generating ~3,300 tokens/s (only 16 at a time, sharing the
-GPU with the scoring engine). Per flagged chunk, `correct` therefore costs about 8 scoring
-passes of it:
-
-| work per flagged chunk | engine | cost (1 = scoring that chunk once) |
-|---|---|---|
-| read the prompt | trained (`serve --correct`) | ~1 |
-| write the answer (~700 tokens) | trained | ~6 |
-| re-score the answer | base (`serve`) | ~1 |
-
-With half the chunks flagged, `correct` ≈ 4 scoring passes of the corpus: about as long as
-the two scoring passes together, or up to twice that. Not hundreds of times longer.
-
-*Who needs GPUs when.* The steps run one after another, so the answer changes by step:
-
-| step | engines needed | GPUs |
-|---|---|---|
-| score pass 1, pass 2 (and calibration, eval scoring) | base only | **all** GPUs run base engines, whole memory |
-| `correct` | trained (~85–90% of the work) + base (~10–15%, the re-score) | **share every GPU**: both engines on all GPUs, about half the memory each |
-
-- **Sharing is the default and the recommendation.** A GPU's compute goes to whichever engine
-  has work, so the ~1 : 7 balance happens by itself, whatever your real ratio turns out to
-  be. The cost is half the memory per engine: plenty for a 9B (~18 GB) on a 141 GB H200,
-  tighter on the 32 GB 5090 (tested there). `./ocrfix pipeline` does exactly this: base at
-  full memory for scoring, then base + trained at `pipeline.both_memory` (0.44 / 0.42) for
-  `correct`. The H200 ×8 profile is already set to 0.45 per engine.
-- **Splitting GPUs instead** (each engine on GPUs of its own): about **1 base : 7 trained**,
-  e.g. `serve --engines 1 --gpus 0` and `serve --correct --engines 7 --gpus 1,2,3,4,5,6,7`.
-  Only worth it if sharing runs out of memory.
-- **Several servers** (started by hand, section 10 "A CPU server + GPU servers"): for the
-  scoring passes every server runs base engines; for `correct`, either both engines on every
-  GPU (simplest), or fixed roles at about 1 : 7, e.g. with 2 × 8 GPUs: 2 GPUs base, 14 trained;
-  3 × 8: 3 base, 21 trained.
-- **Check on the real machine** (the 1 : 7 is an estimate from the 5090):
-  - `nvidia-smi` during `correct`: GPUs that only hold base engines and sit near 0% → too
-    many GPUs for base.
-  - each engine's log (`runs/vllm/<name>-<port>.log`) shows requests *Running* and
-    *Waiting*: a long Waiting queue on the trained engines and none on base → move GPUs to
-    trained (and the other way round).
-  - `refined/correct_stats.json` records tokens/s: compare setups on a 1% sample
-    (`--sample-frac 0.01` on `chunk`).
 
 **Training (`train sft`, `train dpo`): GPUs, batch, memory**
 
@@ -802,25 +902,9 @@ process per GPU. Everything below is under `hw.train.` in the profile, except
 - Check what a run will use: `./ocrfix config --key hw.train` (with the same `--profile` /
   `--set`).
 
-### A CPU server + GPU servers
-
-Keep the project and data on the CPU server (or on storage every machine mounts); the GPU
-servers only run `serve` and `train`. With several GPU servers, start `./ocrfix serve` on each
-(each with `--set hw.infer.host=<its own LAN address>`), and list all their addresses in
-`hw.infer.score_urls` / `correct_urls` of the profile you run the commands with: requests are
-spread over every address in the list. `configs/profiles/cluster.yaml.example` is a worked
-example (one server for the base model, two for the trained one). Training runs on one
-server at a time (all its GPUs); it doesn't spread over several servers.
-Set `hw.infer.host` in the profile to the GPU server's LAN address on both machines; the
-commands that send requests (`score`, `correct`, `data dpo`, `calibrate-noise`,
-`calibrate-noise-chunk`) then run on the CPU server. The CPU server needs only the model's
-small files (`config.json`, tokenizer files) at the same path. Details:
-[docs/runbook.md](docs/runbook.md). The servers have no password: keep them on the internal
-network.
-
 ---
 
-## 11. Test data, tests, project layout
+## 12. Test data, tests, project layout
 
 These are developer tools, not pipeline steps, so they call the venv's Python directly:
 `.venv\Scripts\python.exe` on Windows (shown), `.venv/bin/python` on Linux.

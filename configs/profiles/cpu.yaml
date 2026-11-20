@@ -1,17 +1,30 @@
-# A Windows/Linux machine without a GPU: the CPU steps (chunk, gold chunks, errors table,
-# corrupt, data sft, calibrate, bpc-hist, eval, report, reconstruct) and the tests.
-# Steps that need the model's forward pass (score, correct, calibrate-noise, data dpo) run
-# here only with score.backend=transformers / correct.backend=transformers, and very slowly.
-model: ../Qwen3.5-4B   # D:\cch\Qwen3.5-4B (relative = current folder, then the project root)
+# =============================================================================================
+# Profile cpu: a machine without a GPU (this Windows PC). The default of ./ocrfix.
+# =============================================================================================
+# Every setting is explained in rtx5090.yaml; here only what differs. With no engines, the
+# backends' `auto` picks transformers: every command that needs the model loads it itself, on
+# the CPU (slow: the 4B scores ~3 tokens/s here; fine for tests and the CPU-only steps).
+# CPU-only steps (no model): markup, gold chunks, errors table, chunk, corrupt, data sft,
+# calibrate, eval, summary, report, bpc-hist, reconstruct, and the tests.
+# =============================================================================================
+
+# D:\cch\Qwen3.5-4B (relative = to the current folder, then the project folder).
+model: ../Qwen3.5-4B
 
 hw:
   name: cpu
+  # No GPU.
   n_gpus: 0
-  dtype: float32                      # bf16 matmuls are slow or missing on most CPUs
+  # float32: bfloat16 matrix maths is slow or missing on most CPUs. The 4B in float32 needs
+  # ~16 GB of RAM; this PC has 16 GB, so for the real 4B add --set hw.dtype=bfloat16 (~8 GB,
+  # slower per token).
+  dtype: float32
   attn_impl: sdpa
-  vllm_attention_backend: FLASHINFER  # unused: vLLM is not installed here
+  # Unused: vLLM is not installed here (a value is required).
+  vllm_attention_backend: FLASHINFER
 
-  train:                              # not for training: kept so the config loads
+  # Not for real training (only the tiny-model tests train here); kept so the config loads.
+  train:
     mode: lora
     per_device_batch_size: 1
     max_seq_len: 2048
@@ -20,19 +33,19 @@ hw:
     packing: false
     distributed: none
 
-  infer:                              # unused unless a vLLM server elsewhere is given in score_urls
-    engines: 0                        # no GPU, no local vLLM engines
-    tensor_parallel_size: 1
-    gpu_memory_utilization: 0.90
+  # No servers on this machine (no GPU): the backends' `auto` uses transformers. To use GPU
+  # servers elsewhere from this PC, list their groups here with their hosts (e.g.
+  # {model: base, host: 10.0.0.11, gpus: [0, 1, 2, 3]}); `auto` then picks vllm.
+  servers: []
+
+  infer:
+    gpus_per_engine: 1
+    ports: {base: 8100, trained: 8101}
     max_model_len: 4096
     max_num_seqs: 8
-    host: 127.0.0.1
-    base_port: 8100
-    correct_port: 8101
-    concurrency: 4
-    score_urls: null
-    correct_urls: null
+    concurrency: null
 
   scorer:
+    # Small batches for the CPU.
     max_batch_tokens: 2048
     logits_chunk: 512

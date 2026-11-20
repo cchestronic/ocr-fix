@@ -394,7 +394,7 @@ def compare_cmd(
     out: Annotated[Path, typer.Argument(dir_okay=False, help="Report .json.")],
     limit: Annotated[int, typer.Option(help="Compare the first N chunks with prose.")] = 200,
     score: Annotated[
-        bool, typer.Option(help="Compare scores (hw.infer.score_urls vs the base in this process).")
+        bool, typer.Option(help="Compare scores (the base servers vs the base in this process).")
     ] = True,
     generate: Annotated[
         bool, typer.Option(help="Compare greedy corrections (correct_urls vs this process).")
@@ -868,28 +868,24 @@ def bpc_hist_cmd(
 @app.command("serve", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def serve_cmd(
     ctx: typer.Context,
-    correct: Annotated[
-        bool, typer.Option(help="Serve correct.model (as `tuned`) instead of the base.")
-    ] = False,
-    port: Annotated[int | None, typer.Option(help="First port [hw.infer.base_port].")] = None,
-    engines: Annotated[int | None, typer.Option(help="Engines [hw.infer.engines].")] = None,
-    gpus: Annotated[str | None, typer.Option(help="GPU ids, e.g. 0,1 [0..engines-1].")] = None,
-    memory: Annotated[
-        float | None, typer.Option(help="GPU memory share [hw.infer.gpu_memory_utilization].")
+    only: Annotated[
+        str | None, typer.Option(help="Start only one kind: base or trained (default: both).")
     ] = None,
-    dry_run: Annotated[bool, typer.Option(help="Print the commands only.")] = False,
+    host: Annotated[
+        str | None,
+        typer.Option(help="This machine's address, if it isn't detected (hw.servers hosts)."),
+    ] = None,
+    dry_run: Annotated[bool, typer.Option(help="Print the engines' commands only.")] = False,
     profile: ProfileOpt = None,
     overrides: SetOpt = None,
 ) -> None:
-    """Start the vLLM engines (base model, or --correct); vLLM arguments go after `--`."""
+    """Start this machine's vLLM servers (hw.servers in the profile); vLLM arguments go after
+    `--`."""
     from ocrfix import serve
 
     cfg = _load(profile, overrides)
     try:
-        engs = serve.engines(
-            cfg, correct=correct, port=port, n=engines, memory=memory, extra=list(ctx.args),
-            gpus=[int(g) for g in gpus.split(",")] if gpus else None,
-        )  # fmt: skip
+        engs = serve.engines(cfg, only=only, me=host, extra=list(ctx.args), echo=typer.echo)
     except ValueError as e:
         raise typer.BadParameter(str(e)) from None
     if dry_run:

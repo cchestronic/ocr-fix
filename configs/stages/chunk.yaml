@@ -1,17 +1,49 @@
-# `ocrfix chunk` (and `gold chunks`): markdown -> masked chunks.
+# =============================================================================================
+# chunk.yaml: `ocrfix chunk <in> <out>` (src/ocrfix/chunks/); also used by `gold chunks`.
+# =============================================================================================
+# Cuts every Markdown file into chunks of min..max tokens and masks what the model must never
+# change: math -> ⟨M1⟩, tables -> ⟨T1⟩, the `protect` kinds below -> ⟨P1⟩. The chunk is the
+# unit everything later works on: scored, flagged, corrected, re-scored, put back.
+# Tokens are counted with the tokenizer of `model` (the profile), so chunk with the model you
+# will score with. Needs no GPU.
+#
+# Output: shard files part-NNNNN.jsonl + manifest.json (the settings) + stats.json. Resumable:
+# a rerun skips finished shards; a rerun with different settings into the same folder is
+# refused (start a new folder). Changing any setting here changes the chunks: everything after
+# chunk (score, calibrate, correct) must run again on the new chunks.
+# =============================================================================================
 
 chunk:
-  min_tokens: 512                     # a chunk ends at the best break in [min, max] tokens,
-  max_tokens: 768                     # counted on the masked text with the model's tokenizer
-  glob: "**/*.md"                     # the markdown files under the input folder
-  sample_frac: null                   # keep this share of documents (by path hash); null = all
-  workers: null                       # processes; null = every CPU core
-  shard_bytes: 33554432               # input markdown per output shard (32 MB)
-  gzip: false                         # write part-*.jsonl.gz instead of part-*.jsonl
-  # Masked as ⟨P#⟩ in prose, like math ⟨M#⟩ and tables ⟨T#⟩ (corpus/protect.py). Regexes:
-  #   images     ![alt](path)            code    `inline code` (not fenced blocks)
-  #   urls       http(s)://..., www...   emails  name@host.tld
-  #   dois       10.NNNN/...             citations  [12], [3, 5-7] (numeric only)
-  # Remove a kind to have it scored and corrected like ordinary prose. Changing this list
-  # changes the chunks and scores: chunk, score and calibrate again.
+  # Chunk size in tokens of the masked text. A chunk ends at the best place between the two:
+  # blank line > sentence end > line end > space > anywhere. Only a document's last chunk can
+  # be shorter (`short: true`). Bigger chunks: more context for the model, fewer requests, but
+  # longer answers to generate and more to lose when one is rejected. The SFT data must fit
+  # `hw.train.max_seq_len` (prompt + answer: about 2 x max_tokens + the instructions);
+  # 768 fits the 5090's 2048.
+  min_tokens: 512
+  max_tokens: 768
+  # Which files under the input folder (also used by `markup`). Recursive pattern.
+  glob: "**/*.md"
+  # Keep only this share of the documents, e.g. 0.01 for a 1% trial run of the whole corpus
+  # stage. The choice is by a hash of each document's path: stable across reruns and spread
+  # over the corpus. null = all. Same as --sample-frac.
+  sample_frac: null
+  # Processes in parallel, one shard each. null = one per CPU core; 0 = this process only.
+  workers: null
+  # Markdown per output shard, in bytes (32 MB). A shard is the unit of parallel work here and
+  # of resuming in score / correct (a stopped `correct` loses at most the shard in progress).
+  # A document is never split across shards. Small inputs get smaller shards automatically
+  # (at least ~64 of them, 1 MB minimum) so every core has work.
+  shard_bytes: 33554432
+  # Write part-*.jsonl.gz (compressed: much smaller, a bit slower) instead of part-*.jsonl.
+  # Every later step reads either.
+  gzip: false
+  # Masked as ⟨P#⟩ in prose, like math ⟨M#⟩ and tables ⟨T#⟩ (corpus/protect.py):
+  #   images     ![alt](path)              code       `inline code` (not fenced blocks)
+  #   urls       http(s)://..., www...     emails     name@host.tld
+  #   dois       10.NNNN/...               citations  [12], [3, 5-7] (numeric only)
+  # Masked text is never scored, never shown to the model as text, never changed. Remove a
+  # kind to have it scored and corrected like ordinary prose (e.g. drop `citations` if your
+  # OCR often garbles them and you want them fixed). Changing this list changes the chunks:
+  # chunk, score and calibrate again.
   protect: [images, code, urls, emails, dois, citations]

@@ -1,15 +1,32 @@
-# `ocrfix pipeline <stage>`: the README's commands as four stages (src/ocrfix/pipeline.py).
-# Every step uses its own default settings; --set on the pipeline command reaches every step.
+# =============================================================================================
+# pipeline.yaml: `ocrfix pipeline prepare|calibrate|train|corpus|all` (src/ocrfix/pipeline.py).
+# =============================================================================================
+# Runs the README's commands stage by stage, with every step's default settings. --set on the
+# pipeline command reaches every step (e.g. --set sft.total=30000). A step whose output exists
+# is skipped (--redo runs it again); --dry-run prints the steps without running them.
+# =============================================================================================
 
 pipeline:
-  data_dir: data/real                 # corpus/, gold/ocr|truth/, clean/ in; every output under it
-  calibration_dir: data/calibration   # calibration.yaml, noise reports (score.calibration points here)
-  runs_dir: runs                      # sft/, sft_merged/, dpo/, dpo_merged/
-  dpo: false                          # train stage: also DPO (and eval it)
-  model: null                         # corpus stage: the correction model; null = runs_dir/
-                                      # dpo_merged with dpo, else runs_dir/sft_merged
-  max_steps: null                     # train sft / dpo: stop after N optimizer steps (quick tests)
-  write_noise: true                   # calibrate-noise writes score.noise into configs/stages/score.yaml
-  both_memory: [0.44, 0.42]           # GPU memory share of the base / trained engines when both run
-                                      # (when the profile gives each engine > 0.5)
-  ready_timeout: 1800                 # seconds to wait for the engines' /health
+  # Your data: <data_dir>/corpus/, gold/ocr/, gold/truth/, clean/ go in; every output of every
+  # stage goes under it too (corpus_fixed/, gold_chunks/, chunks/, scored/, refined/,
+  # corrected/, pipeline_logs/, ...).
+  data_dir: data/real
+  # calibration.yaml and the noise reports. Every scoring step after the calibrate stage uses
+  # <calibration_dir>/calibration.yaml (so it overrides score.calibration for the pipeline).
+  calibration_dir: data/calibration
+  # Training output: sft/ (adapter), sft_merged/ (the model), dpo/, dpo_merged/.
+  runs_dir: runs
+  # The train stage also builds DPO pairs, trains DPO, merges, and evaluates it next to SFT.
+  dpo: false
+  # The corpus stage's correction model. null = what the train stage made: <runs_dir>/
+  # dpo_merged with dpo: true, else <runs_dir>/sft_merged. Set a path to use another model.
+  model: null
+  # Stop each training run after N optimizer steps (null = full epochs). For quick test runs
+  # only.
+  max_steps: null
+  # `calibrate-noise` writes the fitted noise thresholds into configs/stages/score.yaml
+  # (true), or only reports them (false, e.g. on test data you don't want to keep).
+  write_noise: true
+  # Seconds to wait for freshly started servers to answer /health before giving up (loading
+  # a 9B and compiling can take minutes).
+  ready_timeout: 1800

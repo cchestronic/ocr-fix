@@ -1,13 +1,54 @@
-# `ocrfix markup`: rule-based repair of MinerU's LaTeX and tables, on the CPU, before `chunk`
-# (src/ocrfix/markup/). Reads the files `chunk.glob` matches; writes a fixed copy of the tree.
+# =============================================================================================
+# markup.yaml: `ocrfix markup <in> <out>` (src/ocrfix/markup/), the first step, CPU only.
+# =============================================================================================
+# Repairs the LaTeX and tables MinerU's OCR left broken, by fixed rules (no model), into a new
+# copy of the tree; the input is never changed. Reads the files `chunk.glob` matches.
+#
+# Safety: every repaired formula / table is checked (the tagger must find exactly one whole
+# span, braces must balance, no text may be lost). If a repair fails the check, the original
+# is kept byte for byte and listed in markup_report.jsonl as `kept_original`. Prose is never
+# edited, except to add a missing closing delimiter or drop the spaces inside `$ x $`.
+#
+# Run it on the corpus AND on gold/ocr, gold/truth and clean: `gold chunks` needs the math of
+# ocr and truth to be identical, so both sides must get the same repairs.
+#
+# Turning a part off (false) skips that repair everywhere; the rest still runs. Changing any
+# of these after the corpus is chunked means: markup again (into a new folder), then chunk,
+# score and correct again, since the text changes.
+# =============================================================================================
 
 markup:
-  workers: null                       # processes; null = every CPU core; 0 = in-process
+  # Processes working in parallel; each takes a batch of files. null = one per CPU core
+  # (the default; fastest); 0 = everything in this one process (for debugging). More than
+  # the number of cores doesn't help. On a big corpus the disk may be the limit.
+  workers: null
+
   latex:
-    delimiters: true                  # close $$ / \[ / \( / \begin{env} left open; $ x $ -> $x$
-    formulas: true                    # inside each formula: braces, \left/\right, inner envs
-    spacing: true                     # x _ { i } -> x_{i} (never inside \text{..})
-    normalize_delimiters: true        # \(..\) -> $..$, \[..\] -> $$..$$
+    # Repair math delimiters so every formula is found as one span: close a `$$` or `\[`
+    # left open at the end of its paragraph and a `\(` at the end of its line, add a missing
+    # `\end{equation}` (and fix `\end{align}` vs `\begin{align*}`), and turn `$ x $` (spaces
+    # inside, not math by the Markdown rule) into `$x$`. Only when the text after the opener
+    # looks like math (no Hangul, some LaTeX), so a stray `$5` in prose is never wrapped.
+    delimiters: true
+    # Inside each formula: balance braces (drop an unmatched `}`, add missing `}`),
+    # `\left` / `\right` (add `\left.` / `\right.`), and inner environments (`array`,
+    # `cases`, `matrix`: a wrong or missing `\end{...}`).
+    formulas: true
+    # MinerU's spaced-out formulas: `x _ { i } ^ { 2 }` -> `x_{i}^{2}`. Spaces before
+    # `_ ^ { }` and after `_ ^ {` go; never inside `\text{...}`-like groups, never after a
+    # lone backslash (`\ `), never between a command and a letter (`\alpha x` keeps it).
+    # Off: formulas keep MinerU's spacing (harmless for the model, which never sees math).
+    spacing: true
+    # One delimiter style: `\(...\)` -> `$...$` and `\[...\]` -> `$$...$$`.
+    normalize_delimiters: true
+
   tables:
-    html: true                        # close tags, pad short rows, drop empty rows
-    markdown: true                    # separator line, pad / trim rows
+    # HTML <table>: rebuilt from its tags. Adds missing </td> </tr> </table> (a table with no
+    # </table> ends at its paragraph), puts cells found outside a row into one, pads rows
+    # shorter than the table with empty cells (colspan / rowspan counted), drops rows with no
+    # text at all. Rows wider than the table and nested tables are only reported.
+    html: true
+    # Markdown pipe tables: adds a missing or malformed `|---|` line, pads short rows, drops
+    # empty extra cells (extra cells with text are only reported). A `|` inside `$...$`, code
+    # or `\|` never splits a cell.
+    markdown: true

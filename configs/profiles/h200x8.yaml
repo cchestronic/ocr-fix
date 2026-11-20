@@ -1,40 +1,58 @@
-# 8x H200 (141 GB each, Hopper sm_90). The engines listen on this server's LAN address, so the
-# ocrfix commands can run on another machine (the CPU server) with the same profile.
-model: /models/Qwen3.5-9B   # change here when the 9B is in place
+# =============================================================================================
+# Profile h200x8: one server with 8x H200 (141 GB each, Hopper sm_90), the 9B model.
+# =============================================================================================
+# Every setting is explained in rtx5090.yaml; here only what differs and why. Set it once on
+# this server: echo 'export OCRFIX_PROFILE=h200x8' >> ~/.bashrc
+# The engines listen on this server's LAN address, so the ocrfix commands can also run on
+# another machine (a CPU server) with this same profile.
+# =============================================================================================
+
+# The 9B, at the same path on every machine that uses this profile.
+model: /models/Qwen3.5-9B
 
 hw:
   name: h200x8
   n_gpus: 8
   dtype: bfloat16
+  # FlashAttention 2 works on Hopper (faster than sdpa); needs the flash-attn package.
   attn_impl: flash_attention_2
-  vllm_attention_backend: FLASH_ATTN   # vllm serve --attention-backend
+  vllm_attention_backend: FLASH_ATTN
 
   train:
-    mode: lora                        # qlora | lora | full (--set hw.train.mode=full -> FSDP)
-    per_device_batch_size: 8          # micro-batch; accumulation reaches train.effective_batch
+    # bf16 base + LoRA: plenty of memory here, faster than qlora. --set hw.train.mode=full for
+    # a full fine-tune (FSDP over the 8 GPUs, ~150 GB for the 9B with Adam).
+    mode: lora
+    per_device_batch_size: 8
+    # Long sequences: with packing, several examples share one 8192-token sequence.
     max_seq_len: 8192
     gradient_checkpointing: true
     optim: adamw_torch_fused
-    packing: true                     # needs fla + causal-conv1d (checked at train start)
-    distributed: auto                 # lora -> ddp, full -> fsdp
-    fsdp:                             # used when distributed resolves to fsdp
+    # Needs flash-linear-attention + causal-conv1d (checked when training starts; install
+    # with scripts/install_offline.py --with-kernels).
+    packing: true
+    # lora -> DDP (a copy per GPU), full -> FSDP (weights split).
+    distributed: auto
+    # FSDP settings, used only when distributed resolves to fsdp (mode: full).
+    fsdp:
       sharding: full_shard auto_wrap
       layer_cls: Qwen3_5DecoderLayer
 
-  infer:                              # vLLM: `ocrfix serve` starts the engines, score/correct use them
-    engines: 8                        # one per GPU (GPU i -> port base_port + i)
-    tensor_parallel_size: 1
-    gpu_memory_utilization: 0.45      # half each: base and tuned engines share the GPUs
+  # ---- model servers (every setting explained in rtx5090.yaml) -------------------------------
+  # Both models share all 8 GPUs (memory 0.44 each, automatic): base engines on ports
+  # 8000-8007, trained engines on 8100-8107. CHANGE host to this server's LAN address, so a
+  # CPU server can send requests to it too. Start both kinds with one command: ./ocrfix serve
+  # Several GPU servers: add their groups to this list (configs/profiles/cluster.yaml.example).
+  servers:
+    - {model: base, host: 10.0.0.20, gpus: all}
+    - {model: trained, host: 10.0.0.20, gpus: all}
+
+  infer:
+    gpus_per_engine: 1
+    ports: {base: 8000, trained: 8100}
     max_model_len: 8192
     max_num_seqs: 256
-    host: 10.0.0.20                   # CHANGE to this GPU server's LAN address: the engines
-                                      # listen on it and the CPU server sends requests to it
-    base_port: 8000                   # engine i listens on base_port + i
-    correct_port: 8100                # the tuned engines (`serve --correct`), GPU i -> correct_port + i
-    concurrency: 1024                 # requests in flight per kind (scoring, correction)
-    score_urls: null                  # servers for scoring; null = this machine's engines
-    correct_urls: null                # servers for correction; null = the base engines, or the
-                                      # tuned ones (correct_port) when correct.model is set
+    # null = automatic (engines x max_num_seqs).
+    concurrency: null
 
   scorer:
     max_batch_tokens: 32768

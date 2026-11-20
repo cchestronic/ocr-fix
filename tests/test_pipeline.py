@@ -44,13 +44,13 @@ def test_step_settings_come_after_the_users():
 
 
 def test_servers_follow_the_steps(tmp_path):
-    """vLLM backends (the GPU machines): which engines run before each step."""
-    c = cfg("hw.infer.engines=1", "hw.infer.gpu_memory_utilization=0.9")
-    sv = Servers(c, None, [], tmp_path)
+    """vLLM backends (the GPU machines): which server kinds run before each step."""
+    sv = Servers(cfg("hw.servers=[{model: base, gpus: [0]}, {model: trained, gpus: [0]}]",
+                     "score.backend=vllm", "correct.backend=vllm"), None, [], tmp_path)  # fmt: skip
     calls = []
 
-    def start(kind, tuned, memory):
-        calls.append(("start", kind, tuned, memory))
+    def start(kind, tuned):
+        calls.append(("start", kind, tuned))
         sv.procs[kind] = (object(), None, tuned, [])
 
     def stop(kind):
@@ -62,14 +62,12 @@ def test_servers_follow_the_steps(tmp_path):
                          (BOTH, "dpo"), (BASE, None)]:  # fmt: skip
         sv.need(Step("s", [], needs, tuned=tuned))
     assert calls == [
-        ("start", "base", None, None),          # scoring: base, whole GPU
-        ("stop", "base"),                       # + trained model: base restarts at half memory
-        ("start", "base", None, 0.44),
-        ("start", "tuned", "sft", 0.42),        # second BOTH(sft): nothing changes
-        ("stop", "base"), ("stop", "tuned"),    # training: no servers
-        ("start", "base", None, 0.44),
-        ("start", "tuned", "dpo", 0.42),
-        ("stop", "tuned"),                      # base only again: the trained model goes
+        ("start", "base", None),               # scoring: base
+        ("start", "trained", "sft"),           # + the trained model (memory set per group)
+        ("stop", "base"), ("stop", "trained"),  # training: no servers
+        ("start", "base", None),
+        ("start", "trained", "dpo"),
+        ("stop", "trained"),                   # base only again: the trained model goes
     ]  # fmt: skip
 
 
@@ -93,12 +91,12 @@ def test_dry_run_marks_done_steps(tmp_path, capsys):
 
 
 def test_remote_engines_are_never_started_here(tmp_path):
-    """Several GPU servers: engines elsewhere must already run; the stage says what to start."""
+    """Several GPU servers: groups elsewhere must already run; the stage says what to start."""
     import pytest
 
-    c = cfg("hw.infer.score_urls=[http://10.9.9.9:8000]", "hw.infer.host=127.0.0.1")
-    sv = Servers(c, None, ["hw.infer.score_urls=[http://10.9.9.9:8000]"], tmp_path)
-    with pytest.raises(RuntimeError, match=r"other servers don't answer: http://10\.9\.9\.9:8000"):
+    sets = ["hw.servers=[{model: base, host: 10.9.9.9, gpus: [0]}]", "score.backend=vllm"]
+    sv = Servers(cfg(*sets), None, sets, tmp_path)
+    with pytest.raises(RuntimeError, match=r"other machines don't answer: http://10\.9\.9\.9:8100"):
         sv.need(Step("score", [], BASE))
     assert not sv.procs and not list(tmp_path.glob("serve-*.log"))  # nothing started here
 

@@ -1,18 +1,50 @@
-# The damage generator: `ocrfix corrupt`. Error rates and types come
-# from `errors table` (error_table.json, confusion_map.json); these settings shape the edits.
-# Used for calibration (damaged vs clean scores) and for synthetic training data.
+# =============================================================================================
+# corrupt.yaml: `ocrfix corrupt` (src/ocrfix/corrupt/), the fake-damage generator.
+# =============================================================================================
+# Adds OCR-like errors to clean chunks, at the rates and with the error types `errors table`
+# measured on your gold (error_table.json, confusion_map.json). The output pairs each damaged
+# chunk with its clean original. Used for:
+#   - calibration: clean vs damaged scores decide which chunks get flagged (`calibrate`);
+#   - training: damaged -> clean is most of the SFT data (`data sft`), and DPO prompts.
+# The closer this damage is to your real OCR, the better both work; the gold check in
+# `calibrate --gold-scores` shows how close it is. Only prose is damaged: math, tables and
+# protected text are copied unchanged. Deterministic for a given `seed`.
+# =============================================================================================
 
 corrupt:
-  rate_scale: 1.0                     # multiplies every sampled per-chunk rate
-  match_total: true                   # scale the histogram draw to the table's total rate
-  variants: 2                        # damaged copies per chunk (default for --n-variants)
-  line_width: [50, 90]                # chars per simulated line (hyphen_wrap boundaries)
-  hyphen_space_prob: 0.5              # "pro- posed" instead of "pro-\nposed"
-  ligature_glyph_prob: 0.5            # fi -> ﬁ; otherwise the ligature is dropped
-  dup_word_prob: 0.25                 # duplicated_char repeats a word instead of a char
-  garbled_wrap_prob: 0.5              # $...$ wrap when the confusion map has no raw forms
-  page_number_prob: 0.5               # header_footer_insert is a bare page number
+  # Each chunk draws its error rate from the gold's histogram for its language; this multiplies
+  # it. 2.0 = twice as damaged as your gold on average (for a model that should cope with worse
+  # pages), 0.5 = half. `--rate R` on the command ignores the histogram and uses a fixed R
+  # errors per character (the pipeline also makes a --rate 0.03 set for calibration).
+  rate_scale: 1.0
+  # Rescale the histogram draw so its mean equals the gold's measured total rate (true), or use
+  # the histogram as it is (false; its open top bin makes the mean drift a little).
+  match_total: true
+  # Damaged copies made of each clean chunk, each with different errors (same as
+  # --n-variants). More = more calibration / training rows from the same clean text.
+  variants: 2
+  # Simulated line width, in characters, for line-break errors: `hyphen_wrap` breaks words at
+  # these simulated line ends (`pro-\nposed`), like a printed column.
+  line_width: [50, 90]
+  # Share of hyphen breaks written `pro- posed` (space) instead of `pro-\nposed` (newline).
+  hyphen_space_prob: 0.5
+  # Ligature errors: share written as the ligature glyph (`fi` -> `ﬁ`); the rest drop the
+  # letters (`fi` -> ``), as OCR does both.
+  ligature_glyph_prob: 0.5
+  # `duplicated_char` errors: share that repeat a whole word (`the the`) instead of one
+  # character (`thhe`).
+  dup_word_prob: 0.25
+  # Garbled Hangul (`hangul_garbled`, e.g. `이` read as `Ol`): share wrapped in `$...$`, as
+  # MinerU often turns garbled Korean into math. Used only when the gold's confusion map has no
+  # raw examples to copy the wrapping from.
+  garbled_wrap_prob: 0.5
+  # Inserted headers / footers (`header_footer_insert`): share that are a bare page number;
+  # the rest are a page number plus one of `header_phrases`.
+  page_number_prob: 0.5
+  # Running headers inserted mid-text, like a journal's page header OCR'd into the body. Put
+  # in the real headers of your documents for more realistic damage.
   header_phrases:
     en: ["Journal of Applied Research", "Proceedings of the Conference", "Vol. 12, No. 3"]
     ko: ["한국정보과학회 논문지", "제 12 권 제 3 호", "정보처리학회논문지"]
+  # Junk symbols inserted for the `other` error type (stray marks OCR reads from dirt, lines).
   junk: ["~", "·", "|", "^", "¬"]

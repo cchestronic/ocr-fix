@@ -1,25 +1,74 @@
-# `ocrfix calibrate`: the per-language rule `spike_frac > A or p90 > B or bpc > C` that flags
-# damaged chunks, fit on clean vs damaged (`corrupt`) scores. Writes the file that
-# score.calibration (score.yaml) points to.
+# =============================================================================================
+# calibrate.yaml: `ocrfix calibrate`, `calibrate-noise`, `calibrate-noise-chunk`
+# (src/ocrfix/calibrate/).
+# =============================================================================================
+# Three calibrations, all written for `score` to use:
+#   calibrate              which chunks are damaged (the flag rule per language), fitted on
+#                          clean vs fake-damaged scores; checked on real gold with --gold-scores
+#   calibrate-noise        which words are noise to cut (score.noise.core/extend/min_chars)
+#   calibrate-noise-chunk  above which bpc a whole chunk is garbage (noise_chunk per language)
+# Outputs go to score.calibration (calibration.yaml) and configs/stages/score.yaml.
+# =============================================================================================
 
 calibrate:
-  target_recall: 0.9                  # on damaged chunks (see recall_on)
-  max_false_flag: 0.05                # share of clean chunks flagged
-  recall_on: [table]                  # corruption labels recall counts on; [] = all damaged
-  min_rows: 50                        # clean and damaged rows a language needs for its own rule
-  max_thresholds: 200                 # spike_frac candidates tried in the two-feature search
-  gold_noisy_cer: 0.0                 # gold source with cer above this is "noisy"
-  noise_chunk:                        # whole-chunk noise limit per language (score.noise.whole_chunks)
-    # limit = highest bpc of real text + margin (bits per char). `calibrate`: real text = its
-    # clean and damaged chunks; `calibrate-noise-chunk`: the gold OCR chunks (use this one)
+  # ---- the flag rule (`calibrate`) -----------------------------------------------------------
+  # Per language, the rule `spike_frac > A or p90 > B or bpc > C` (any part may be off), with
+  # thresholds taken from the clean chunks' scores.
+  #
+  # Share of damaged chunks the rule should catch. The search first tries one feature; if that
+  # reaches this recall it stops, else it combines features. Not a guarantee: if even the best
+  # rule misses it, `target_met: false` is written and printed.
+  target_recall: 0.9
+  # Share of CLEAN chunks the rule may flag (false flags; exact, since thresholds come from
+  # clean scores). The main dial: higher = more damaged chunks caught but more clean chunks
+  # sent to `correct` (more GPU time, more chances of a false fix); lower = the reverse.
+  max_false_flag: 0.05
+  # Which damaged chunks recall is measured on, by `corrupt`'s label: `table` = damage at the
+  # gold's real rates (the realistic set); add e.g. `r0.03` to include the fixed 3% set;
+  # [] = every damaged chunk.
+  recall_on: [table]
+  # A language needs at least this many clean AND this many damaged chunks for its own rule;
+  # languages with fewer use the rule fitted on all languages together ("*").
+  min_rows: 50
+  # Thresholds tried per feature in the two-feature search (more = finer, slower).
+  max_thresholds: 200
+  # The gold check (`calibrate --gold-scores`): a real gold chunk counts as damaged when its
+  # error rate (character edits OCR -> truth / truth length) is above this. 0 = any edit at
+  # all; e.g. 0.005 = more than 1 error in 200 characters (ignores chunks with one tiny slip).
+  gold_noisy_cer: 0.0
+
+  # ---- whole-chunk noise limit (`calibrate-noise-chunk`; first value from `calibrate`) --------
+  noise_chunk:
+    # limit = the highest bpc of real text + this margin (bits per character). Real text =
+    # the gold OCR chunks (`calibrate-noise-chunk`, the one to use) or the clean and damaged
+    # chunks (`calibrate`, a first guess). Bigger margin = only extreme garbage dropped.
     margin: 1.0
-    deleted_share: 0.5                # gold chunk whose annotator deleted >= this share = noise
-    candidates: [0.5, 1.0, 1.5, 2.0, 3.0]  # margins whose corpus drops are reported
-    samples: 5                        # corpus chunks shown per 0.5-bpc band
-  noise:                              # `ocrfix calibrate-noise` (noise-removal thresholds)
-    # real text (everything the truth keeps) that may be removed, as a share of all real text
-    max_text_removed: 0.0001          # 1 char in 10,000
-    min_chars: [20, 25, 30, 40, 60]   # tried; only long runs are removed
-    min_noise_chars: 2000             # fewer inserted noise chars: no result written
-    insert_runs: [1, 3]               # junk runs inserted per gold chunk copy
-    insert_chars: [20, 60]            # non-space chars per inserted run (only long runs are removed)
+    # A gold chunk whose annotator deleted at least this share of its characters (junk the
+    # truth leaves out) counts as noise, not real text, when finding the highest real bpc.
+    deleted_share: 0.5
+    # Other margins whose effect on the corpus (chunks / characters dropped) the report lists,
+    # to help choose.
+    candidates: [0.5, 1.0, 1.5, 2.0, 3.0]
+    # Corpus chunks shown per 0.5-bpc band around the limit in noise_chunk_samples.md: read
+    # them to see what would be dropped.
+    samples: 5
+
+  # ---- noise-removal thresholds (`calibrate-noise`) ------------------------------------------
+  # Every gold chunk (sft + dpo, never eval) is also scored as a copy with junk inserted; the
+  # thresholds that remove the most inserted junk while removing at most `max_text_removed`
+  # of the real text win.
+  noise:
+    # Share of real text (everything the truth keeps) that may be removed: 0.0001 = 1
+    # character in 10,000. The safety dial: lower = less real text lost, more noise left.
+    max_text_removed: 0.0001
+    # Run lengths tried for score.noise.min_chars (only long runs are removed; shorter junk
+    # is left to the correction model).
+    min_chars: [20, 25, 30, 40, 60]
+    # Too little inserted junk to judge (fewer characters than this): no result written. Add
+    # gold chunks if you hit it.
+    min_noise_chars: 2000
+    # Junk runs inserted per gold chunk copy (from, to).
+    insert_runs: [1, 3]
+    # Non-space characters per inserted run (from, to); at least 20, since only runs that long
+    # are removed.
+    insert_chars: [20, 60]

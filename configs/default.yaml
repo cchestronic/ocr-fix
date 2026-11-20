@@ -1,30 +1,66 @@
-# Shared settings. Each step's settings are in configs/stages/<step>.yaml, under a section of
-# the same name:
+# =============================================================================================
+# default.yaml: settings every step shares.
+# =============================================================================================
 #
-#   chunk.yaml      chunk:     chunk size, files, what is masked
-#   score.yaml      score:     scoring, noise removal, the calibration file
-#   gold.yaml       gold:      gold split, error table options
-#   corrupt.yaml    corrupt:   the damage generator
-#   calibrate.yaml  calibrate: which scores count as damaged
-#   sft.yaml        sft:, train:   SFT data; training settings (train.dpo is in dpo.yaml)
-#   dpo.yaml        dpo:, train.dpo:   DPO pairs; DPO training
-#   correct.yaml    correct:   the correction model, decoding, checks and re-score
-#   eval.yaml       eval:      evaluation
+# How the settings are put together (src/ocrfix/config.py), in this order, later wins:
+#   1. this file
+#   2. every configs/stages/<step>.yaml: one file per step, one section of the same name
+#        markup.yaml     markup:      LaTeX / table repair before chunking
+#        chunk.yaml      chunk:       chunk size, which files, what is masked
+#        gold.yaml       gold:        gold split, error-table options
+#        corrupt.yaml    corrupt:     the fake-damage generator
+#        score.yaml      score:       scoring, noise removal, the calibration file
+#        calibrate.yaml  calibrate:   which scores count as damaged / as noise
+#        sft.yaml        sft:, train: SFT data; training settings shared by SFT and DPO
+#        dpo.yaml        dpo:, train.dpo:  DPO pairs; DPO training
+#        correct.yaml    correct:     the correction model, decoding, checks, re-score
+#        eval.yaml       eval:        evaluation
+#        reconstruct.yaml reconstruct: when a nearly empty document is dropped
+#        pipeline.yaml   pipeline:    `ocrfix pipeline` (folders, DPO on/off, servers)
+#   3. configs/profiles/<profile>.yaml: the machine (`model` and `hw` only)
+#   4. --set key=value on the command line (one run only)
 #
-# The machine (model path, GPUs, vLLM engines and servers) is configs/profiles/<name>.yaml.
-# Order: this file, every stages/*.yaml, the profile, then --set key=value. Each setting lives in
-# exactly one file; setting it again elsewhere is an error. `ocrfix config` prints the result.
+# Rules:
+#   - Each setting lives in exactly one file; the same key in two files is an error, so there
+#     is never doubt which value wins.
+#   - A profile may only set `model` and `hw`.
+#   - See what a command will use: ./ocrfix config --key <key>   (or ./ocrfix config for all),
+#     with the same --profile / --set as the command.
+# =============================================================================================
 
-seed: 1234                            # every random choice (splits, damage, sampling, decoding)
-work_dir: runs                        # vLLM logs and training checkpoints
+# One seed for every random choice: the gold split, the fake damage, the SFT/DPO data mix and
+# shuffles, sampling, decoding. Same seed + same inputs = the same outputs. A different seed
+# gives a second, different set (the pipeline uses --set seed=2 for the training damage and
+# seed=7 for the DPO damage, so they differ from the calibration damage).
+seed: 1234
 
-lang:                                 # chunk language: ko | en | mixed | cjk | other
-  dominant: 0.8                       # share of letters needed for ko / en
-  mixed_min: 0.1                      # min share of each of ko and en for mixed
-  hangul_weight: 2.0                  # a Hangul syllable or Han character counts as this many letters
-  cjk_min: 0.5                        # Han + kana share for cjk (Chinese, Japanese); below it they
-                                      # don't count at all (Hanja in Korean text)
+# Folder for working files that aren't data: vLLM engine logs (<work_dir>/vllm/) and training
+# checkpoints. Relative = to the folder you run the command from.
+work_dir: runs
 
-# Set by the profile; required.
+# How a chunk's language is decided (corpus/lang.py). Only prose letters count (math never;
+# table text only when there is no prose). The result is stored per chunk as `lang`:
+#   ko / en  one language dominates     mixed  both Korean and English
+#   cjk      mostly Chinese / Japanese  other  math-only, numbers, other scripts
+# It matters because the flag thresholds are fitted per language (calibrate), the SFT mix can
+# be balanced per language (sft.lang_balance), and correct.langs says which languages are
+# sent to the model (cjk and other pass through unchanged by default).
+lang:
+  # Share of (weighted) letters one language needs to be the chunk's language. Lower = more
+  # chunks called ko / en, fewer mixed.
+  dominant: 0.8
+  # Below `dominant`, a chunk is `mixed` if Korean and English each have at least this share;
+  # otherwise `other`.
+  mixed_min: 0.1
+  # A Hangul syllable (and a Han character) carries a whole syllable, so it counts as this many
+  # Latin letters. Without it, a Korean sentence with a few English terms would look mixed.
+  hangul_weight: 2.0
+  # Han + kana share of the letters for `cjk` (Chinese / Japanese text, passed through
+  # unchanged). Below it, Han characters don't count at all, so Hanja inside Korean text
+  # keeps the chunk `ko`.
+  cjk_min: 0.5
+
+# Set by the profile (configs/profiles/<name>.yaml); `???` means required: a command without a
+# profile stops with an error instead of guessing a model or GPU layout.
 model: ???
 hw: ???
