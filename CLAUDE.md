@@ -163,7 +163,12 @@ flagged docs: fix counts, issues with a snippet) and `markup_stats.json`.
   reported, nested tables left alone; pipe tables get a missing/malformed `|---|` line and
   rows padded or trimmed (only empty extra cells); `|` in `$..$`, code or `\|` never splits.
 - **Delimiters** (`latex.repair_delimiters`): top-level `\begin{env}` closed at its paragraph
-  end, a mismatched `\end` renamed; `$$` / `\[` left open closed at the paragraph end, `\(` at
+  end, a mismatched `\end` renamed; blank lines inside `$$..$$` / `\[..\]` (the tagger never
+  lets these cross a blank line, so the formula would stay unmasked prose; also a LaTeX error)
+  collapsed to single newlines by `join_display_blank_lines` when every blank-line-separated
+  piece in between is `_math_only` (non-empty, no Hangul, no `$`, no run of 3+ words of 2+
+  letters outside `\text{..}`-like groups; `$$` paired in order, a failed pair shifts by one),
+  counted `latex.display_blank_lines_joined`; then `$$` / `\[` left open closed at the paragraph end, `\(` at
   the line end, only when the rest looks like math (no Hangul, some LaTeX: `looks_math`);
   `$ x $` tightened when the content looks like math; orphan closers only reported.
 - **Formulas** (`latex.fix_formula`): inner envs, `\left`/`\right` (`\left.`/`\right.`) and

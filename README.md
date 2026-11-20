@@ -278,9 +278,16 @@ exists, and stops after each stage so you can check the results before spending 
 ./ocrfix markup data/real/clean       data/real/clean_fixed
 ```
 
-- Fixes unclosed `$$` / `\[` / `\begin{equation}`, unbalanced braces and `\left`/`\right`,
-  MinerU spacing (`x _ { i }` → `x_{i}`), broken HTML tables (missing `</td>` `</tr>`
-  `</table>`, short rows), Markdown tables without a `|---|` line or with short rows.
+- Fixes unclosed `$$` / `\[` / `\begin{equation}`, blank lines inside `$$…$$` / `\[…\]`
+  (they cut the formula in two), unbalanced braces and `\left`/`\right`, MinerU spacing
+  (`x _ { i }` → `x_{i}`), broken HTML tables (missing `</td>` `</tr>` `</table>`, short
+  rows), Markdown tables without a `|---|` line or with short rows.
+- **What the model never sees** (masked as placeholders when chunking): every table as one
+  `⟨T1⟩`, including any LaTeX inside its cells (HTML or Markdown tables); every formula as one
+  `⟨M1⟩`, also over several lines (`$$…$$`, `\[…\]`, `\begin{align}…`). A blank line inside
+  `$$…$$` or `\[…\]` would end the formula, so `markup` removes it first, but only when
+  everything in between looks like math (no Korean, no run of ordinary words): a stray `$$`
+  never swallows real paragraphs.
 - **If a formula or table can't be fixed safely, the original is kept** and reported.
 - Writes a copy; the input is never changed. Uses every CPU core; resumable.
 - **Run it on gold too, both sides:** `gold chunks` keeps a chunk only if its math and tables

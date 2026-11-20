@@ -236,3 +236,31 @@ def test_run_markup_resumes(tmp_path):
     assert st.skipped == 2 and st.changed == 1
     rows = (out / "markup_report.jsonl").read_text("utf-8").splitlines()
     assert len(rows) == 3
+
+
+# --- blank lines inside display math ----------------------------------------------------------
+
+
+def _math_spans(text: str) -> list[str]:
+    return [text[s.start : s.end] for s in tag_spans(text) if s.kind == "math"]
+
+
+def test_blank_line_inside_display_math_is_joined():
+    for opener, closer in (("$$", "$$"), ("\\[", "\\]")):
+        body = "a = b \\\\\n\nc = \\text{for all i}"  # a LaTeX line break, then a blank line
+        text = f"식은 다음과 같다.\n\n{opener}\n{body}\n{closer}\n\n끝."
+        assert _math_spans(text) == []  # the blank line hides the formula from the tagger
+        r = fix_document(text, OPTS)
+        spans = _math_spans(r.text)
+        assert len(spans) == 1 and "\n\n" not in spans[0], r.text
+        assert r.fixes["latex.display_blank_lines_joined"] == 1
+        assert "식은 다음과 같다." in r.text and r.text.rstrip().endswith("끝.")
+
+
+def test_prose_between_dollars_is_never_joined():
+    # a stray $$, then real paragraphs (English and Korean), then another $$: not one formula
+    for middle in ("The model is trained on clean pages.", "모델은 깨끗한 페이지로 학습한다."):
+        text = f"$$\na = b\n\n{middle}\n\n$$\nc = d\n$$\n"
+        r = fix_document(text, OPTS)
+        assert middle in r.text and "latex.display_blank_lines_joined" not in r.fixes
+        assert all(middle not in m for m in _math_spans(r.text))

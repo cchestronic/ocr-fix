@@ -7,6 +7,9 @@ tagger (``corpus/tagger.py``) finds every formula as one span:
   - ``\\begin{env}`` of a display environment (equation, align, gather, multline, starred)
     with no ``\\end``: closed at the end of its paragraph; an ``\\end{x}`` that doesn't match
     the open ``\\begin{y}`` is renamed to ``\\end{y}`` (OCR often drops the ``*``).
+  - a blank line inside ``$$...$$`` / ``\\[...\\]`` (a LaTeX error, and it ends the formula
+    for the tagger): removed, when everything in between looks like math
+    (``join_display_blank_lines``);
   - ``$$``, ``\\[`` left open in a paragraph: closed at the paragraph end; ``\\(`` left open:
     closed at the end of its line. Only when the text after the opener looks like math (no
     Hangul, some LaTeX), so prose with a stray ``$`` is never wrapped.
@@ -447,6 +450,61 @@ def tighten_inline(text: str, a: int, b: int, res: Result) -> str:
     return _SPACED_DOLLAR.sub(rep, seg)
 
 
+_PROSE_RUN = re.compile(r"(?<![\\A-Za-z])[A-Za-z]{2,}(?:[ \t]+[A-Za-z]{2,}){2,}")
+_TEXT_GROUP = re.compile(
+    r"\\(?:text|mbox|hbox|textrm|textit|textbf|mathrm|operatorname)\s*\{[^{}]*\}"
+)
+_BLANK_RUN = re.compile(r"\n(?:[ \t]*\n)+")
+
+
+def _math_only(piece: str) -> bool:
+    """A blank-line-separated piece that can be part of a display formula: some content, no
+    Hangul, no `$` (inline math lives in prose), and no run of three or more ordinary words
+    outside \\text{...}-like groups."""
+    if not piece.strip() or HANGUL.search(piece) or "$" in piece:
+        return False
+    return not _PROSE_RUN.search(_TEXT_GROUP.sub(" ", piece))
+
+
+def join_display_blank_lines(seg: str, res: Result) -> str:
+    """Blank lines inside a display formula (`$$...$$`, `\\[...\\]`) end it for the tagger, and
+    are a LaTeX error too. Where the opener's closer lies past blank lines and every piece in
+    between looks like math (`_math_only`), the blank lines become single line breaks, so the
+    formula is one span again. Anything that might be prose is left for `_repair_paragraph`."""
+    edits: list[tuple[int, int]] = []  # (open end, close start) of formulas to join
+    dd = _unescaped(seg, "$$")
+    k = 0
+    while k + 1 < len(dd):
+        a, b = dd[k] + 2, dd[k + 1]
+        if _BLANK.search(seg, a, b):
+            if all(_math_only(x) for x in _BLANK.split(seg[a:b])):
+                edits.append((a, b))
+                k += 2
+                continue
+            k += 1  # not a formula across blank lines: maybe dd[k+1] opens the next one
+            continue
+        k += 2
+    for o, c in (("\\[", "\\]"),):
+        opens, closes = _unescaped(seg, o), _unescaped(seg, c)
+        for p in opens:
+            q = next((x for x in closes if x > p), None)
+            nxt = next((x for x in opens if x > p), None)
+            if q is None or (nxt is not None and nxt < q):
+                continue
+            a, b = p + 2, q
+            if _BLANK.search(seg, a, b) and all(_math_only(x) for x in _BLANK.split(seg[a:b])):
+                edits.append((a, b))
+    if not edits:
+        return seg
+    out, pos = [], 0
+    for a, b in sorted(edits):
+        out += [seg[pos:a], _BLANK_RUN.sub("\n", seg[a:b])]
+        pos = b
+        res.fixes["latex.display_blank_lines_joined"] += 1
+    out.append(seg[pos:])
+    return "".join(out)
+
+
 def repair_delimiters(text: str, regions: list[tuple[int, int]]) -> Result:
     """Delimiter repair in ``regions`` (the non-table parts of ``text``)."""
     res = Result(text)
@@ -454,6 +512,7 @@ def repair_delimiters(text: str, regions: list[tuple[int, int]]) -> Result:
     for a, b in regions:
         out.append(text[pos:a])
         seg = _repair_envs(text, a, b, res)
+        seg = join_display_blank_lines(seg, res)
         # paragraphs of the segment
         pieces, p = [], 0
         for m in _BLANK.finditer(seg):

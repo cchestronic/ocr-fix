@@ -29,6 +29,8 @@ markup:
     # `\end{equation}` (and fix `\end{align}` vs `\begin{align*}`), and turn `$ x $` (spaces
     # inside, not math by the Markdown rule) into `$x$`. Only when the text after the opener
     # looks like math (no Hangul, some LaTeX), so a stray `$5` in prose is never wrapped.
+    # Also removes blank lines inside `$$...$$` / `\[...\]` (they end the formula, so it would
+    # stay unmasked), only when everything between the delimiters looks like math.
     delimiters: true
     # Inside each formula: balance braces (drop an unmatched `}`, add missing `}`),
     # `\left` / `\right` (add `\left.` / `\right.`), and inner environments (`array`,
